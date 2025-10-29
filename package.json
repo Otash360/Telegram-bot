@@ -1,17 +1,15 @@
 {
-  "name": "telegram-bot",
+  "name": "telegram-anime-bot-mongo",
   "version": "1.0.0",
-  "description": "",
+  "description": "Telegram bot for managing anime using MongoDB",
   "main": "index.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "express": "^5.1.0",
-    "mongodb": "^6.20.0",
-    "node-telegram-bot-api": "^0.66.0"
+    "express": "^4.19.2",
+    "mongodb": "^6.5.0",
+    "node-telegram-bot-api": "^0.65.1"
   }
 }
