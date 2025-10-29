@@ -2,7 +2,8 @@
 import TelegramBot from 'node-telegram-bot-api';
 import express from 'express';
 import process from 'process';
-import { MongoClient } from 'mongodb';
+// ObjectId'ni MongoDB kutubxonasidan import qilamiz
+import { MongoClient, ObjectId } from 'mongodb';
 
 // ------------------ KONFIGURATSIYA ------------------
 const token = process.env.BOT_TOKEN;
@@ -24,7 +25,7 @@ const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'animebot';
 
 // ------------------ GLOBAL O'ZGARUVCHILAR ------------------
 let ADMIN_IDS = [];
-let dbClient, DB, animesCol, countersCol, configCol;
+let dbClient, DB, animesCol, configCol;
 const sessions = new Map();
 const INLINE_CACHE_SECONDS = 10;
 const bot = new TelegramBot(token, { polling: !WEBHOOK_URL });
@@ -32,14 +33,8 @@ let BOT_USERNAME = null;
 const BOT_START_TIME = Math.floor(Date.now() / 1000);
 
 // ======================================================================
+// ================== BIR MARTALIK ADMIN TAYINLASH ======================
 // ======================================================================
-// ========= BIR MARTALIK ADMIN TAYINLASH FUNKSIYALARI ==================
-//
-// Admin tayinlangandan so'ng, bu blokdagi funksiyalarni o'chirib
-// tashlashingiz yoki izohga olib qo'yishingiz mumkin.
-//
-// ======================================================================
-
 async function loadAdminsFromDB() {
     try {
         const config = await configCol.findOne({ _id: 'bot_config' });
@@ -68,9 +63,6 @@ async function setupFirstAdmin(msg) {
     }
 }
 // ======================================================================
-// =================== ADMIN TAYINLASH BLOKI TUGADI =====================
-// ======================================================================
-
 
 // ------------------ MONGO DB FUNKSIYALARI ------------------
 async function initMongo() {
@@ -83,7 +75,6 @@ async function initMongo() {
 
     DB = dbClient.db(MONGO_DB_NAME);
     animesCol = DB.collection('animes');
-    countersCol = DB.collection('counters');
     configCol = DB.collection('config');
     
     await animesCol.createIndex({ name: 'text' }).catch(() => {});
@@ -95,32 +86,11 @@ async function initMongo() {
   }
 }
 
-/**
- * XATOLIK TUZATILGAN FUNKSIYA
- * Atomik ravishda yangi ID generatsiya qiladi.
- */
-async function getNextSequence(name = 'animeid') {
-  const result = await countersCol.findOneAndUpdate(
-    { _id: name },
-    { $inc: { seq: 1 } },
-    { upsert: true, returnDocument: 'after' }
-  );
-  
-  // YECHIM: Natijani to'g'ridan-to'g'ri tekshirish (`result.value` o'rniga)
-  if (result && typeof result.seq === 'number') {
-    return result.seq;
-  } else {
-    // Agar kutilmagan javob kelsa (bu deyarli imkonsiz, lekin himoya uchun)
-    console.error('[getNextSequence] KRITIK XATO: findOneAndUpdate metodi kutilgan dokumentni qaytarmadi. MongoDB javobi:', JSON.stringify(result));
-    throw new Error('Ma\'lumotlar bazasidan yangi ID generatsiya qilib bo\'lmadi.');
-  }
-}
-
+// ID TIZIMI O'ZGARTIRILDI: Endi `counters` collection ishlatilmaydi.
 async function insertAnimeToDB(animeObj) {
-  const id = await getNextSequence('animeid');
-  const doc = { id, ...animeObj, created_at: new Date() };
-  await animesCol.insertOne(doc);
-  return id;
+  const doc = { ...animeObj, created_at: new Date() };
+  const result = await animesCol.insertOne(doc);
+  return result.insertedId; // MongoDB o'zi yaratgan noyob _id ni qaytaramiz
 }
 
 async function findAnimesByQuery(q, limit = 10) {
@@ -128,8 +98,17 @@ async function findAnimesByQuery(q, limit = 10) {
     const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     return await animesCol.find({ name: regex }).limit(limit).toArray();
 }
-async function listAllAnimes() { return await animesCol.find().sort({ id: 1 }).toArray(); }
-async function getAnimeById(id) { return await animesCol.findOne({ id: Number(id) }); }
+async function listAllAnimes() { return await animesCol.find().sort({ created_at: -1 }).toArray(); }
+
+// ID TIZIMI O'ZGARTIRILDI: Endi string id qabul qilib, ObjectId ga o'giradi.
+async function getAnimeById(idString) { 
+    try {
+        return await animesCol.findOne({ _id: new ObjectId(idString) });
+    } catch (e) {
+        console.error("Noto'g'ri ID formati yoki topilmadi:", idString, e.message);
+        return null;
+    }
+}
 
 // ------------------ SESSIYA YORDAMCHILARI ------------------
 function startSession(chatId, adminId) {
@@ -154,13 +133,11 @@ function confirmKeyboard() {
 if (WEBHOOK_URL) {
   const app = express(); app.use(express.json());
   bot.setWebHook(WEBHOOK_URL).then(() => console.log('Webhook o\'rnatildi:', WEBHOOK_URL)).catch(err => console.error('Webhook xatosi:', err));
-  
   app.post(`/webhook/${token}`, (req, res) => {
     if (req.body?.message?.date < BOT_START_TIME) return res.sendStatus(200);
     bot.processUpdate(req.body);
     res.sendStatus(200);
   });
-  
   app.get('/', (req, res) => res.send('Bot ishlayapti ✅'));
   app.listen(PORT, () => console.log(`Server ${PORT}-portda ishlamoqda`));
 } else { console.log('Polling rejimida ishga tushirildi.'); }
@@ -172,7 +149,6 @@ process.on('unhandledRejection', (reason) => console.error('Tutilmagan promise x
 bot.on('error', (err) => console.error('Botda umumiy xato:', err));
 
 // ------------------ BOT BUYRUQLARI VA HANDLERLARI ------------------
-
 bot.onText(/\/start/, async (msg) => {
     await setupFirstAdmin(msg);
     if (ADMIN_IDS.includes(msg.from.id)) {
@@ -186,10 +162,8 @@ bot.onText(/\/start/, async (msg) => {
 
 bot.on('message', async (msg) => {
     if (msg.date < BOT_START_TIME) return;
-
     const s = getSession(msg.chat.id);
     if (s && s.adminId === msg.from.id) return handleSessionMessage(msg, s);
-
     if (msg.text && !msg.text.startsWith('/') && ADMIN_IDS.includes(msg.from.id)) {
         switch (msg.text) {
             case '➕ Yangi anime qo‘shish': return handleAddAnime(msg);
@@ -238,12 +212,14 @@ bot.on('callback_query', async (query) => {
 
     if (data.startsWith('view_')) {
         await bot.answerCallbackQuery(query.id);
-        const anime = await getAnimeById(data.split('_')[1]);
-        if (!anime) return bot.sendMessage(chatId, 'Bu anime topilmadi.');
+        const animeId = data.substring(5); // "view_" dan keyingi qismini olamiz
+        const anime = await getAnimeById(animeId);
+        if (!anime) return bot.sendMessage(chatId, 'Bu anime topilmadi yoki o`chirilgan.');
         try {
-            if (anime.poster_id) await bot.sendPhoto(chatId, anime.poster_id);
-            if (anime.video_id) return bot.sendVideo(chatId, anime.video_id, { caption: `📺 ${anime.name}` });
-            else return bot.sendMessage(chatId, `📺 ${anime.name}\n(Bu anime uchun video topilmadi)`);
+            const caption = `📺 ${anime.name}\n🎞️ Qism: ${anime.episode_count ?? 'Noma\'lum'}\n📆 Fasl: ${anime.season ?? 'Noma\'lum'}`;
+            if (anime.poster_id) await bot.sendPhoto(chatId, anime.poster_id, { caption });
+            if (anime.video_id) return bot.sendVideo(chatId, anime.video_id);
+            else if (!anime.poster_id) return bot.sendMessage(chatId, `${caption}\n\n(Bu anime uchun video topilmadi)`);
         } catch (e) { return bot.sendMessage(chatId, 'Media fayllarni yuborishda xato yuz berdi.'); }
         return;
     }
@@ -258,8 +234,8 @@ bot.on('callback_query', async (query) => {
     
     if (data === 'action_confirm') {
         try {
-            const id = await insertAnimeToDB(s.data); 
-            await bot.sendMessage(chatId, `✅ Anime muvaffaqiyatli saqlandi (ID: ${id}).`);
+            const insertedId = await insertAnimeToDB(s.data); 
+            await bot.sendMessage(chatId, `✅ Anime muvaffaqiyatli saqlandi (ID: ${insertedId.toString()}).`);
         } catch (e) { 
             console.error("action_confirm xatosi:", e);
             await bot.sendMessage(chatId, 'Saqlashda xato yuz berdi: ' + e.message); 
@@ -268,15 +244,38 @@ bot.on('callback_query', async (query) => {
     }
 });
 
+// YECHIM: Inline qidiruvda rasm chiqarish uchun yangilangan funksiya
 bot.on('inline_query', async (iq) => {
     try {
         const matches = await findAnimesByQuery(iq.query.trim());
-        const results = matches.map(a => ({
-            type: 'article', id: String(a.id), title: a.name,
-            input_message_content: { message_text: `⏳ "${a.name}" animesi yuborilmoqda...` },
-            reply_markup: { inline_keyboard: [[{ text: '🎬 Ko‘rish', callback_data: `view_${a.id}` }]] },
-            description: `Qism: ${a.episode_count}, Fasl: ${a.season ?? '—'}`
-        }));
+        const results = matches.map(anime => {
+            const id = anime._id.toString();
+            const caption = `🎞️ ${anime.episode_count ?? '?'} qism | 📆 ${anime.season ?? '?'} fasl`;
+            
+            // Agar poster bo'lsa, 'photo' tipida natija qaytaramiz
+            if (anime.poster_id) {
+                return {
+                    type: 'photo',
+                    id: id,
+                    photo_file_id: anime.poster_id,
+                    title: anime.name,
+                    description: caption,
+                    reply_markup: {
+                        inline_keyboard: [[{ text: '🎬 Ko‘rish', callback_data: `view_${id}` }]]
+                    }
+                };
+            }
+            
+            // Agar poster bo'lmasa, 'article' tipida qaytaramiz
+            return {
+                type: 'article',
+                id: id,
+                title: anime.name,
+                input_message_content: { message_text: `⏳ "${anime.name}" animesi yuborilmoqda...` },
+                reply_markup: { inline_keyboard: [[{ text: '🎬 Ko‘rish', callback_data: `view_${id}` }]] },
+                description: caption
+            };
+        });
         await bot.answerInlineQuery(iq.id, results, { cache_time: INLINE_CACHE_SECONDS, is_personal: true });
     } catch (e) { console.error('inline_query xatosi:', e); }
 });
@@ -291,7 +290,7 @@ async function handleListAnimes(msg) {
     if (!ADMIN_IDS.includes(msg.from.id)) return;
     const rows = await listAllAnimes();
     if (!rows.length) return bot.sendMessage(msg.chat.id, 'Saqlangan animelar yo‘q.');
-    const text = rows.map(a => `🆔${a.id} — ${a.name}`).join('\n');
+    const text = rows.map(a => `🆔 ${a._id.toString()}\n— ${a.name}`).join('\n\n');
     for (let i = 0; i < text.length; i += 4096) {
         await bot.sendMessage(msg.chat.id, text.substring(i, i + 4096));
     }
