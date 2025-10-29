@@ -319,4 +319,4 @@ async function handleListAnimes(msg) {
 (async () => {
     await initMongo();
     console.log('Bot to`liq ishga tushdi va buyruqlarni qabul qilishga tayyor.');
-})();
+})(); 
