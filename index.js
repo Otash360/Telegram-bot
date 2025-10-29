@@ -111,8 +111,7 @@ async function getAnimeById(idString) {
 
 /**
  * file_id dan vaqtinchalik (1 soatlik) URL generatsiya qiladi.
- * @param {string} fileId Rasmning file_id si
- * @returns {Promise<string|null>} Rasmning to'liq URL manzili yoki xatolik bo'lsa null
+ * Bu funksiya siz topgan ma'lumot asosida ishlaydi.
  */
 async function getFileUrl(fileId) {
     if (!fileId) return null;
@@ -174,7 +173,7 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
         return await sendFormattedAnime(chatId, deepLinkPayload);
     }
     
-    // await setupFirstAdmin(msg);
+    await setupFirstAdmin(msg);
 
     if (ADMIN_IDS.includes(msg.from.id)) {
         const text = `👋 Assalomu alaykum, Admin!`;
@@ -242,7 +241,6 @@ bot.on('message', async (msg) => {
 });
 
 async function handleSessionMessage(msg, session) {
-    // Bu funksiya o'zgarishsiz qoladi...
     const chatId = msg.chat.id;
     try {
         const protectedOptions = { protect_content: true };
@@ -305,29 +303,43 @@ bot.on('callback_query', async (query) => {
 
 
 // ======================================================================
-// ========= YANGILANGAN INLINE QIDIRUV MANTIG'I (SIZNING TAKLIFINGIZ ASOSIDA) =======================
+// ========= YANGILANGAN INLINE QIDIRUV MANTIG'I =======================
 // ======================================================================
 bot.on('inline_query', async (iq) => {
     try {
         const query = iq.query.trim();
         const matches = await findAnimesByQuery(query, 20);
 
+        // Natijalarni tayyorlash uchun asinxron map dan foydalanamiz
         const resultsPromises = matches.map(async (anime) => {
+            
+            // `thumb_url` uchun vaqtinchalik URL olamiz
             const thumbUrl = await getFileUrl(anime.poster_id);
 
+            // Foydalanuvchi natijani bosganda chatga yuboriladigan matn
+            const messageText = `• Anime: ${anime.name}
+╭━━━━━━━━━━━━━━━━━━━━━━━━━
+• Sezon: ${anime.season ?? 'N/A'}
+• Ongoin
+• Qism : ${anime.episode_count ?? 'N/A'}
+• Sifat : 1080 p
+╰━━━━━━━━━━━━━━━━━━━━━━━━━
+
+‣ Kanal: @animedia_fandub`;
+            
             return {
                 type: 'article',
                 id: anime._id.toString(),
                 title: anime.name,
                 description: `Fasl: ${anime.season ?? 'N/A'} | Qism: ${anime.episode_count ?? 'N/A'}`,
-                thumb_url: thumbUrl, // Kichik rasm uchun URL
+                thumb_url: thumbUrl,
                 input_message_content: {
-                    message_text: `⏳ Siz "${anime.name}" animesini tanladingiz.\n\nUni ochish uchun quyidagi "Ko'rish" tugmasini bosing.`
+                    message_text: messageText
                 },
                 reply_markup: {
                     inline_keyboard: [[
                         {
-                            text: '🎬 Ko‘rish',
+                            text: '🎬 Videoni ko‘rish',
                             url: `https://t.me/${BOT_USERNAME}?start=${anime._id.toString()}`
                         }
                     ]]
