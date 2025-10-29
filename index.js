@@ -45,21 +45,21 @@ async function loadAdminsFromDB() {
     } catch (e) { console.error("Adminlarni MongoDB'dan yuklashda xato:", e); }
 }
 
-// async function setupFirstAdmin(msg) {
-//     if (ADMIN_IDS.length > 0) return false;
-//     const fromId = msg.from.id;
-//     ADMIN_IDS.push(fromId);
-//     try {
-//         await configCol.updateOne({ _id: 'bot_config' }, { $set: { admin_ids: ADMIN_IDS } }, { upsert: true });
-//         console.log(`🎉 BIRINCHI ADMIN TAYINLANDI! ID: ${fromId}.`);
-//         await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`, { protect_content: true }).catch(()=>{});
-//         return true;
-//     } catch (e) {
-//         console.error("Birinchi adminni MongoDB'ga saqlashda xato:", e);
-//         ADMIN_IDS = [];
-//         return false;
-//     }
-// }
+async function setupFirstAdmin(msg) {
+    if (ADMIN_IDS.length > 0) return false;
+    const fromId = msg.from.id;
+    ADMIN_IDS.push(fromId);
+    try {
+        await configCol.updateOne({ _id: 'bot_config' }, { $set: { admin_ids: ADMIN_IDS } }, { upsert: true });
+        console.log(`🎉 BIRINCHI ADMIN TAYINLANDI! ID: ${fromId}.`);
+        await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`, { protect_content: true }).catch(()=>{});
+        return true;
+    } catch (e) {
+        console.error("Birinchi adminni MongoDB'ga saqlashda xato:", e);
+        ADMIN_IDS = [];
+        return false;
+    }
+}
 // ======================================================================
 // =================== ADMIN TAYINLASH BLOKI TUGADI =====================
 // ======================================================================
@@ -285,25 +285,82 @@ bot.on('callback_query', async (query) => {
     }
 });
 
+
+// ======================================================================
+// ========= YANGILANGAN INLINE QIDIRUV MANTIG'I =======================
+// ======================================================================
 bot.on('inline_query', async (iq) => {
     try {
-        const matches = await findAnimesByQuery(iq.query.trim());
-        const results = matches.map(a => ({
-            type: 'article',
-            id: a._id.toString(),
-            title: a.name,
-            input_message_content: { message_text: `⏳ "${a.name}" animesini tayyorlash... \n\nIltimos, quyidagi "Ko'rish" tugmasini bosing.` },
-            reply_markup: {
-                inline_keyboard: [[{
-                    text: '🎬 Ko‘rish',
-                    url: `https://t.me/${BOT_USERNAME}?start=${a._id.toString()}`
-                }]]
-            },
-            description: `Qism: ${a.episode_count}, Fasl: ${a.season ?? '—'}`
-        }));
+        const matches = await findAnimesByQuery(iq.query.trim(), 20); // Ko'proq natija topamiz
+
+        // Har bir rasm uchun vaqtinchalik URL olamiz
+        const resultsPromises = matches.map(async (a) => {
+            let thumbUrl = null;
+            if (a.poster_id) {
+                try {
+                    // getFileLink vaqtinchalik (1 soatlik) URL beradi
+                    thumbUrl = await bot.getFileLink(a.poster_id);
+                } catch (e) {
+                    console.warn(`file_id uchun URL olib bo'lmadi: ${a.poster_id}`);
+                }
+            }
+            
+            // Chiroyli matnni tayyorlash
+            const caption = `• Anime: ${a.name}
+╭━━━━━━━━━━━━━━━━━━━━━━━━━
+• Sezon: ${a.season ?? 'N/A'}
+• Ongoin
+• Qism : ${a.episode_count ?? 'N/A'}
+• Sifat : 1080 p
+╰━━━━━━━━━━━━━━━━━━━━━━━━━
+
+‣ Kanal: @animedia_fandub`;
+
+            if (a.poster_id) {
+                // Rasm bo'lsa, 'photo' turidagi natija
+                return {
+                    type: 'photo',
+                    id: a._id.toString(),
+                    photo_file_id: a.poster_id,
+                    caption: caption,
+                    reply_markup: {
+                        inline_keyboard: [[{
+                            text: '🎬 Videoni ko‘rish',
+                            url: `https://t.me/${BOT_USERNAME}?start=${a._id.toString()}`
+                        }]]
+                    },
+                    // Kichik rasm uchun olingan URL
+                    thumb_url: thumbUrl 
+                };
+            } else {
+                // Rasm bo'lmasa, 'article' turidagi natija
+                return {
+                    type: 'article',
+                    id: a._id.toString(),
+                    title: a.name,
+                    input_message_content: {
+                        message_text: caption
+                    },
+                    reply_markup: {
+                        inline_keyboard: [[{
+                            text: '🎬 Videoni ko‘rish',
+                            url: `https://t.me/${BOT_USERNAME}?start=${a._id.toString()}`
+                        }]]
+                    },
+                    description: `Qism: ${a.episode_count}, Fasl: ${a.season ?? '—'}`,
+                    thumb_url: thumbUrl // rasm bo'lmasa ham null bo'ladi
+                };
+            }
+        });
+
+        const results = await Promise.all(resultsPromises);
         await bot.answerInlineQuery(iq.id, results, { cache_time: INLINE_CACHE_SECONDS });
-    } catch (e) { console.error('inline_query xatosi:', e); }
+
+    } catch (e) { 
+        console.error('inline_query xatosi:', e); 
+    }
 });
+
 
 async function handleAddAnime(msg) {
     if (!ADMIN_IDS.includes(msg.from.id)) return;
