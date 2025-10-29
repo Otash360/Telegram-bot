@@ -164,7 +164,7 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     }
     
     // XATOLIKNI TUZATISH UCHUN MANA SHU FUNKSIYA MUHIM
-    await setupFirstAdmin(msg);
+    // await setupFirstAdmin(msg);
 
     if (ADMIN_IDS.includes(msg.from.id)) {
         const text = `👋 Assalomu alaykum, Admin!`;
