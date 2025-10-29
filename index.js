@@ -40,43 +40,43 @@ let BOT_USERNAME = null;
 
 // ------------------ MONGO DB FUNKSIYALARI ------------------
 
-/**
- * MongoDB dan adminlar ro'yxatini yuklaydi.
- */
-async function loadAdminsFromDB() {
-    try {
-        const config = await configCol.findOne({ _id: 'bot_config' });
-        if (config && Array.isArray(config.admin_ids)) {
-            ADMIN_IDS = config.admin_ids;
-            console.log('Adminlar MongoDB dan yuklandi:', ADMIN_IDS);
-        } else {
-            console.log('Ma\'lumotlar bazasida adminlar topilmadi. Birinchi foydalanuvchi kutilmoqda.');
-        }
-    } catch (e) {
-        console.error("Adminlarni MongoDB'dan yuklashda xato:", e);
-    }
-}
+// /**
+//  * MongoDB dan adminlar ro'yxatini yuklaydi.
+//  */
+// async function loadAdminsFromDB() {
+//     try {
+//         const config = await configCol.findOne({ _id: 'bot_config' });
+//         if (config && Array.isArray(config.admin_ids)) {
+//             ADMIN_IDS = config.admin_ids;
+//             console.log('Adminlar MongoDB dan yuklandi:', ADMIN_IDS);
+//         } else {
+//             console.log('Ma\'lumotlar bazasida adminlar topilmadi. Birinchi foydalanuvchi kutilmoqda.');
+//         }
+//     } catch (e) {
+//         console.error("Adminlarni MongoDB'dan yuklashda xato:", e);
+//     }
+// }
 
-/**
- * Agar admin hali tayinlanmagan bo'lsa, birinchi /start bosgan foydalanuvchini admin sifatida saqlaydi.
- */
-async function setupFirstAdmin(msg) {
-    if (ADMIN_IDS.length > 0) return false;
+// /**
+//  * Agar admin hali tayinlanmagan bo'lsa, birinchi /start bosgan foydalanuvchini admin sifatida saqlaydi.
+//  */
+// async function setupFirstAdmin(msg) {
+//     if (ADMIN_IDS.length > 0) return false;
 
-    const fromId = msg.from.id;
-    ADMIN_IDS.push(fromId);
+//     const fromId = msg.from.id;
+//     ADMIN_IDS.push(fromId);
 
-    try {
-        await configCol.updateOne({ _id: 'bot_config' }, { $set: { admin_ids: ADMIN_IDS } }, { upsert: true });
-        console.log(`🎉 BIRINCHI ADMIN TAYINLANDI! ID: ${fromId}. Ma'lumot MongoDB'ga saqlandi.`);
-        await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`).catch(()=>{});
-        return true;
-    } catch (e) {
-        console.error("Birinchi adminni MongoDB'ga saqlashda xato:", e);
-        ADMIN_IDS = [];
-        return false;
-    }
-}
+//     try {
+//         await configCol.updateOne({ _id: 'bot_config' }, { $set: { admin_ids: ADMIN_IDS } }, { upsert: true });
+//         console.log(`🎉 BIRINCHI ADMIN TAYINLANDI! ID: ${fromId}. Ma'lumot MongoDB'ga saqlandi.`);
+//         await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`).catch(()=>{});
+//         return true;
+//     } catch (e) {
+//         console.error("Birinchi adminni MongoDB'ga saqlashda xato:", e);
+//         ADMIN_IDS = [];
+//         return false;
+//     }
+// }
 
 /**
  * MongoDB ga ulanishni amalga oshiradi.
