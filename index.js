@@ -1,231 +1,538 @@
 // index.js
 import TelegramBot from 'node-telegram-bot-api';
 import express from 'express';
-import fs from 'fs';
+import fs from 'fs/promises';
+import path from 'path';
+import process from 'process';
 
+// ------------------ CONFIG ------------------
 const token = process.env.BOT_TOKEN;
-const bot = new TelegramBot(token, { polling: false });
-const app = express();
-
+if (!token) {
+  console.error('BOT_TOKEN muammo: .env ga BOT_TOKEN qoʻshing');
+  process.exit(1);
+}
 const PORT = process.env.PORT || 3000;
-const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL + '/webhook/' + token;
+const WEBHOOK_URL = (process.env.RENDER_EXTERNAL_URL ? (process.env.RENDER_EXTERNAL_URL.replace(/\/$/,'') + '/webhook/' + token) : null);
+const ADMIN_IDS = (process.env.ADMIN_IDS || '') // misol: "12345,67890"
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
+  .map(Number);
 
-// 🔐 Admin ID lar
-const ADMINS = [716246260, /* 2-admin ID sini bu yerga qo‘shing */];
+// ---------- Globals & storage ----------
+const DATA_FILE = path.resolve('./data.json');
+let DB = { animes: [] }; // yuklanadi agar mavjud bo'lsa
+const sessions = new Map(); // chatId -> session obyekti (temp)
+// inline cache vaqt (soniyalar)
+const INLINE_CACHE_SECONDS = 15;
 
-// 🗂 Data fayli
-const DATA_FILE = './data.json';
+// ---------- Telegram bot (webhook mode) ----------
+const bot = new TelegramBot(token, { polling: false });
 
-// 🧠 Sessionlar (yangi anime qo‘shish uchun)
-const sessions = {};
-
-// 📂 Data faylni o‘qish yoki yaratish
-const loadData = () => {
-  if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify({ animes: [] }, null, 2));
-  return JSON.parse(fs.readFileSync(DATA_FILE));
-};
-
-const saveData = (data) => fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-
-// 🔗 Webhook o‘rnatish
-bot.setWebHook(WEBHOOK_URL);
-
-// 📩 Telegram webhook endpoint
-app.post('/webhook/' + token, express.json(), (req, res) => {
-  bot.processUpdate(req.body);
-  res.sendStatus(200);
-});
-
-// 🌐 Test endpoint
-app.get('/', (req, res) => res.send('Bot ishlayapti ✅'));
-
-// 🧭 /start komandasi
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-
-  if (!ADMINS.includes(chatId)) {
-    bot.sendMessage(chatId, "😿 Kechirasiz, bu bot faqat adminlar uchun.");
-    return;
+// olish bot username (optinal)
+let BOT_USERNAME = null;
+(async () => {
+  try {
+    const me = await bot.getMe();
+    BOT_USERNAME = me.username || null;
+  } catch (e) {
+    console.warn('Bot username olinmadi:', e?.message || e);
   }
+})();
 
-  const menu = {
-    reply_markup: {
-      keyboard: [
-        ['➕ Yangi anime qo‘shish'],
-        ['🔍 Anime qidirish'],
-      ],
-      resize_keyboard: true,
-    },
-  };
+// ---------- Express webhook endpoints ----------
+const app = express();
+app.use(express.json());
 
-  bot.sendMessage(chatId, `👋 Salom, Admin! Asosiy menyudan tanlang:`, menu);
-});
-
-// 🎬 Anime qo‘shish bosqichlari
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-
-  if (!ADMINS.includes(chatId)) return;
-
-  if (text === '➕ Yangi anime qo‘shish') {
-    sessions[chatId] = { step: 1, data: {} };
-    bot.sendMessage(chatId, '🎥 Anime videosini yuboring:');
-    return;
-  }
-
-  const session = sessions[chatId];
-  if (!session) return;
-
-  switch (session.step) {
-    case 1:
-      if (!msg.video) {
-        bot.sendMessage(chatId, '❌ Iltimos, video yuboring.');
-        return;
-      }
-      session.data.video_id = msg.video.file_id;
-      session.step = 2;
-      bot.sendMessage(chatId, '📝 Anime nomini kiriting:');
-      break;
-
-    case 2:
-      session.data.name = text;
-      session.step = 3;
-      bot.sendMessage(chatId, '📺 Anime qism sonini kiriting:');
-      break;
-
-    case 3:
-      if (isNaN(Number(text))) {
-        bot.sendMessage(chatId, '❌ Faqat raqam kiriting!');
-        return;
-      }
-      session.data.episode_count = Number(text);
-      session.step = 4;
-      bot.sendMessage(chatId, '🖼️ Anime posteri (rasm)ni yuboring:');
-      break;
-
-    case 4:
-      if (!msg.photo) {
-        bot.sendMessage(chatId, '❌ Iltimos, rasm yuboring.');
-        return;
-      }
-      session.data.poster_id = msg.photo[msg.photo.length - 1].file_id;
-      session.step = 5;
-
-      const skipButtons = {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '✅ Skip', callback_data: 'skip_season' }],
-            [{ text: '❌ Bekor qilish', callback_data: 'cancel' }],
-          ],
-        },
-      };
-      bot.sendMessage(chatId, '📆 Agar fasl bo‘lsa kiriting (masalan: 2), yoki skip bosing.', skipButtons);
-      break;
-
-    case 5:
-      session.data.season = isNaN(Number(text)) ? null : Number(text);
-      await confirmAnime(chatId, session.data);
-      delete sessions[chatId];
-      break;
-  }
-});
-
-// ⚙️ Inline callbacklar
-bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id;
-  const data = query.data;
-
-  if (data === 'skip_season') {
-    const session = sessions[chatId];
-    if (session) {
-      session.data.season = null;
-      await confirmAnime(chatId, session.data);
-      delete sessions[chatId];
-    }
-  } else if (data === 'cancel') {
-    delete sessions[chatId];
-    bot.sendMessage(chatId, '❌ Jarayon bekor qilindi.');
-  } else if (data.startsWith('confirm_')) {
-    const animeData = JSON.parse(data.replace('confirm_', ''));
-    const db = loadData();
-
-    const newAnime = {
-      id: db.animes.length + 1,
-      ...animeData,
-    };
-
-    db.animes.push(newAnime);
-    saveData(db);
-
-    bot.sendMessage(chatId, `✅ Anime saqlandi: ${newAnime.name}`);
-  }
-});
-
-// 🧾 Tasdiqlash funksiyasi
-async function confirmAnime(chatId, anime) {
-  const info = `
-📌 <b>Anime nomi:</b> ${anime.name}
-📆 <b>Fasl:</b> ${anime.season ?? 'Yo‘q'}
-🎞️ <b>Qism:</b> ${anime.episode_count}
-🎥 <b>Video:</b> ${anime.video_id}
-🖼️ <b>Poster:</b> ${anime.poster_id}
-`;
-
-  const confirmButtons = {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '✅ Tasdiqlash', callback_data: 'confirm_' + JSON.stringify(anime) }],
-        [{ text: '❌ Bekor qilish', callback_data: 'cancel' }],
-      ],
-    },
-    parse_mode: 'HTML',
-  };
-
-  await bot.sendMessage(chatId, info, confirmButtons);
+// webhook o'rnatish agar RENDER_EXTERNAL_URL berilgan bo'lsa
+if (WEBHOOK_URL) {
+  bot.setWebHook(WEBHOOK_URL).then(() => {
+    console.log('Webhook o\'rnatildi:', WEBHOOK_URL);
+  }).catch(err => {
+    console.warn('Webhook o\'rnatishda xato:', err?.message || err);
+  });
+  app.post('/webhook/' + token, (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
+  });
+} else {
+  console.log('WEBHOOK_URL yo\'q — webhook o\'rnatilmadi. (RENDER_EXTERNAL_URL belgilanmagan)');
+  // Eslatma: agar webhook ishlatilmasa, polling true qilib ishga tushirish kerak bo'ladi
 }
 
-// 🔍 Inline qidiruv (anime search)
-bot.on('inline_query', async (query) => {
-  const db = loadData();
-  const results = db.animes
-    .filter((a) => a.name.toLowerCase().includes(query.query.toLowerCase()))
-    .map((a) => ({
-      type: 'article',
-      id: a.id.toString(),
-      title: a.name,
-      description: `Fasl: ${a.season ?? '—'} | Qism: ${a.episode_count}`,
-      thumb_url: `https://api.telegram.org/file/bot${token}/${a.poster_id}`,
-      input_message_content: {
-        message_text: `📺 <b>${a.name}</b>\n📆 Fasl: ${a.season ?? 'Yo‘q'}\n🎞️ Qism: ${a.episode_count}`,
-        parse_mode: 'HTML',
-      },
+// oddiy test endpoint
+app.get('/', (req, res) => res.send('Bot ishlayapti ✅'));
+
+// server start
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// ---------- Utility funksiyalar ----------
+async function loadDB() {
+  try {
+    const raw = await fs.readFile(DATA_FILE, 'utf8');
+    DB = JSON.parse(raw);
+    if (!DB.animes) DB.animes = [];
+  } catch (e) {
+    console.log('data.json topilmadi yoki o'qishda xato — yangi fayl yaratiladi keyinida');
+    DB = { animes: [] };
+  }
+}
+async function saveDB() {
+  await fs.writeFile(DATA_FILE, JSON.stringify(DB, null, 2), 'utf8');
+}
+function isAdmin(userId) {
+  return ADMIN_IDS.includes(Number(userId));
+}
+function newAnimeId() {
+  const arr = DB.animes || [];
+  return arr.length ? Math.max(...arr.map(a => a.id)) + 1 : 1;
+}
+function startSession(chatId, adminId) {
+  const s = {
+    adminId,
+    step: 'awaiting_video',
+    data: {
+      name: null,
+      season: null,
+      episode_count: null,
+      video_id: null,
+      poster_id: null
+    }
+  };
+  sessions.set(String(chatId), s);
+  return s;
+}
+function endSession(chatId) {
+  sessions.delete(String(chatId));
+}
+function getSession(chatId) {
+  return sessions.get(String(chatId));
+}
+function sessionStepKeyboard({ allowBack = false, allowSkip = false } = {}) {
+  const kb = [];
+  const row = [];
+  if (allowBack) row.push({ text: '🔙 Orqaga', callback_data: 'action_back' });
+  row.push({ text: '❌ Bekor qilish', callback_data: 'action_cancel' });
+  if (allowSkip) row.push({ text: '✅ Skip', callback_data: 'action_skip' });
+  kb.push(row);
+  return { reply_markup: { inline_keyboard: kb } };
+}
+function confirmKeyboard() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Tasdiqlash', callback_data: 'action_confirm' },
+          { text: '✏️ Tahrirlash', callback_data: 'action_edit' },
+          { text: '❌ Bekor qilish', callback_data: 'action_cancel' }
+        ]
+      ]
+    }
+  };
+}
+
+// ---------- Load DB on start ----------
+await loadDB();
+
+// ---------- Commandlar va xabarlar ----------
+
+// /start — admin bo'lsa menyu, boshqa hollarda minimal javob
+bot.onText(/\/start(?:\s(.+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const fromId = msg.from.id;
+  if (isAdmin(fromId)) {
+    const text = `👋 Salom, Admin!\n\nAsosiy menyu:\n1. ➕ Yangi anime qo‘shish (/addanime)\n2. 🔍 Inline orqali qidirish (@${BOT_USERNAME || 'bot'})\n\nIltimos, /addanime buyrug‘i bilan yangi anime qo‘shing.`;
+    const kb = {
       reply_markup: {
-        inline_keyboard: [
-          [{ text: '🎥 Ko‘rish', callback_data: `watch_${a.id}` }],
+        keyboard: [
+          [{ text: '➕ Yangi anime qo‘shish (/addanime)' }],
+          [{ text: '🔍 Inline orqali qidirish' }]
         ],
-      },
-    }));
-
-  bot.answerInlineQuery(query.id, results.slice(0, 10));
-});
-
-// ▶️ Anime ko‘rish tugmasi
-bot.on('callback_query', (query) => {
-  const chatId = query.message.chat.id;
-  const data = query.data;
-
-  if (data.startsWith('watch_')) {
-    const id = Number(data.replace('watch_', ''));
-    const db = loadData();
-    const anime = db.animes.find((a) => a.id === id);
-    if (!anime) return bot.sendMessage(chatId, '❌ Anime topilmadi.');
-
-    bot.sendPhoto(chatId, anime.poster_id, {
-      caption: `📺 ${anime.name}\n📆 Fasl: ${anime.season ?? 'Yo‘q'}\n🎞️ Qism: ${anime.episode_count}`,
-    });
-    bot.sendVideo(chatId, anime.video_id);
+        resize_keyboard: true,
+        one_time_keyboard: false
+      }
+    };
+    await bot.sendMessage(chatId, text, kb);
+  } else {
+    // oddiy foydalanuvchi uchun
+    await bot.sendMessage(chatId, 'Salom! Anime qidirish uchun botni inline rejimida chaqiring: @' + (BOT_USERNAME || 'bot'));
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// /addanime — faqat adminlarga
+bot.onText(/\/addanime/, async (msg) => {
+  const chatId = msg.chat.id;
+  const fromId = msg.from.id;
+  if (!isAdmin(fromId)) {
+    await bot.sendMessage(chatId, '❌ Bu buyruq faqat adminlar uchun.');
+    return;
+  }
+  // boshlang'ich sessiya
+  const s = startSession(chatId, fromId);
+  await bot.sendMessage(chatId, '🎬 Yangi anime qo‘shish jarayoni boshlandi.\nIltimos anime video faylini yuboring (video file yoki document sifatida).', sessionStepKeyboard({ allowBack: false, allowSkip: false }));
+});
+
+// Xabarlar: video, photo, textni qayta ishlash (seshnga bog'liq)
+bot.on('message', async (msg) => {
+  // Agar CallbackQuery orqali kelgan bo'lsa alohida qayta ishlanadi
+  if (msg.text && msg.text.startsWith('/')) return; // komandalarni yuqorida qayta ishladik
+  const chatId = msg.chat.id;
+  const s = getSession(chatId);
+  if (!s) return; // sessiya yo'q - boshqa xabarlar chetda qoladi
+  // Faqat sessiya egasi (admin) uchun
+  if (msg.from.id !== s.adminId) {
+    await bot.sendMessage(chatId, '⚠️ Bu sessiya bilan ishlash huquqi sizda yo‘q.');
+    return;
+  }
+
+  try {
+    if (s.step === 'awaiting_video') {
+      // qabul qiling: video yoki document (video) bo'lishi mumkin
+      let fileId = null;
+      if (msg.video && msg.video.file_id) fileId = msg.video.file_id;
+      else if (msg.document && msg.document.mime_type && msg.document.mime_type.startsWith('video')) fileId = msg.document.file_id;
+      if (!fileId) {
+        await bot.sendMessage(chatId, '❗ Iltimos, video yuboring (video fayl yoki video sifatida yuborilgan document).', sessionStepKeyboard({ allowBack: true }));
+        return;
+      }
+      s.data.video_id = fileId;
+      s.step = 'awaiting_name';
+      await bot.sendMessage(chatId, '✅ Video qabul qilindi.\n\nEndi anime nomini kiriting 📝 (masalan: Naruto)', sessionStepKeyboard({ allowBack: true }));
+      return;
+    }
+
+    if (s.step === 'awaiting_name') {
+      if (!msg.text) {
+        await bot.sendMessage(chatId, '❗ Iltimos, matn shaklida anime nomini yuboring.', sessionStepKeyboard({ allowBack: true }));
+        return;
+      }
+      s.data.name = msg.text.trim();
+      s.step = 'awaiting_episode_count';
+      await bot.sendMessage(chatId, '📺 Qism sonini kiriting (raqam).', sessionStepKeyboard({ allowBack: true, allowSkip: false }));
+      return;
+    }
+
+    if (s.step === 'awaiting_episode_count') {
+      if (!msg.text || isNaN(Number(msg.text.trim()))) {
+        await bot.sendMessage(chatId, '❗ Iltimos, faqat raqam kiriting (masalan: 24). Agar raqamni bilmasangiz "0" deb yuboring.', sessionStepKeyboard({ allowBack: true }));
+        return;
+      }
+      s.data.episode_count = Number(msg.text.trim());
+      s.step = 'awaiting_poster';
+      await bot.sendMessage(chatId, '🖼️ Endi anime posteri uchun rasm yuboring (photo sifatida). Agar yo‘q bo‘lsa "Skip" tugmasini bosing.', sessionStepKeyboard({ allowBack: true, allowSkip: true }));
+      return;
+    }
+
+    if (s.step === 'awaiting_poster') {
+      // rasm yoki skip tugmasi orqali kelishi mumkin; skip callback bo'ladi
+      if (!msg.photo || !msg.photo.length) {
+        await bot.sendMessage(chatId, '❗ Iltimos, photo (rasm) yuboring. Yoki "Skip" tugmasini bosing.', sessionStepKeyboard({ allowBack: true, allowSkip: true }));
+        return;
+      }
+      // eng katta rasmni (oxirgisini) oling
+      const photo = msg.photo[msg.photo.length - 1];
+      s.data.poster_id = photo.file_id;
+      s.step = 'awaiting_season';
+      await bot.sendMessage(chatId, '📆 Agar fasl (season) mavjud bo‘lsa raqamini kiriting (masalan: 2). Aks holda "Skip" tugmasini bosing.', sessionStepKeyboard({ allowBack: true, allowSkip: true }));
+      return;
+    }
+
+    if (s.step === 'awaiting_season') {
+      if (!msg.text) {
+        await bot.sendMessage(chatId, '❗ Iltimos, fasl raqamini yozing yoki Skip tugmasini bosing.', sessionStepKeyboard({ allowBack: true, allowSkip: true }));
+        return;
+      }
+      // Agar admin "skip" so'zini yozsa ham qo'llab yuborish mumkin
+      const t = msg.text.trim().toLowerCase();
+      if (t === 'skip' || t === '➡️ skip' || t === 'skip' ) {
+        s.data.season = null;
+      } else if (!isNaN(Number(msg.text.trim()))) {
+        s.data.season = Number(msg.text.trim());
+      } else {
+        await bot.sendMessage(chatId, '❗ Iltimos, raqam kiriting yoki Skip deb yozing.', sessionStepKeyboard({ allowBack: true, allowSkip: true }));
+        return;
+      }
+      s.step = 'confirm';
+      // Yakuniy tasdiq xabari
+      const summary = [
+        `📌 Anime nomi: ${s.data.name || '—'}`,
+        `📆 Fasl: ${s.data.season ?? '—'}`,
+        `🎞️ Qism soni: ${s.data.episode_count ?? '—'}`,
+        `🎥 Video file_id: ${s.data.video_id ?? '—'}`,
+        `🖼️ Poster file_id: ${s.data.poster_id ?? '—'}`
+      ].join('\n');
+      await bot.sendMessage(chatId, 'Yakuniy ma\'lumotlar:\n\n' + summary, confirmKeyboard());
+      return;
+    }
+
+    if (s.step === 'confirm') {
+      // kutyapmiz callback_query orqali action_confirm yoki edit yoki cancel
+      // ammo agar admin matn yuborsa: aynan "tasdiqlash" so'zini yozsa ham qabul qilamiz
+      const text = (msg.text || '').trim().toLowerCase();
+      if (text === 'tasdiqlash' || text === 'confirm' || text === '✅ tasdiqlash') {
+        // tushunish: tugmacha bosilmasayam saqlaymiz
+        const id = newAnimeId();
+        const anime = {
+          id,
+          name: s.data.name || '',
+          season: s.data.season || null,
+          episode_count: s.data.episode_count || 0,
+          video_id: s.data.video_id || '',
+          poster_id: s.data.poster_id || ''
+        };
+        DB.animes.push(anime);
+        await saveDB();
+        await bot.sendMessage(chatId, `✅ Anime saqlandi (ID: ${id}).`);
+        endSession(chatId);
+      } else {
+        await bot.sendMessage(chatId, '❗ Tasdiqlash yoki Tahrirlash tugmasini bosing (👆).', confirmKeyboard());
+      }
+      return;
+    }
+
+  } catch (err) {
+    console.error('Xatolik sessiyada:', err);
+    await bot.sendMessage(chatId, 'Xatolik yuz berdi: ' + (err?.message || err));
+    endSession(chatId);
+  }
+});
+
+// ---------- Callback query tugmalarini boshqarish ----------
+bot.on('callback_query', async (query) => {
+  const data = query.data;
+  const chatId = query.message ? query.message.chat.id : query.from.id;
+  const fromId = query.from.id;
+
+  // inline qidiruv natijasidagi "view_{id}" tugmasi
+  if (data && data.startsWith('view_')) {
+    const id = Number(data.split('_')[1]);
+    const anime = DB.animes.find(a => a.id === id);
+    if (!anime) {
+      await bot.answerCallbackQuery(query.id, { text: 'Anime topilmadi.' });
+      return;
+    }
+    // video yuborish
+    try {
+      await bot.sendMessage(chatId, `📺 ${anime.name}\n📆 Fasl: ${anime.season ?? '—'} | 🎞️ Qism: ${anime.episode_count}`);
+      if (anime.poster_id) {
+        await bot.sendPhoto(chatId, anime.poster_id, { caption: 'Poster' });
+      }
+      if (anime.video_id) {
+        await bot.sendVideo(chatId, anime.video_id, { caption: `Video: ${anime.name}` });
+      } else {
+        await bot.sendMessage(chatId, 'Video mavjud emas.');
+      }
+      await bot.answerCallbackQuery(query.id);
+    } catch (e) {
+      console.error('view callback xato:', e);
+      await bot.answerCallbackQuery(query.id, { text: 'Xato yuz berdi.' });
+    }
+    return;
+  }
+
+  // sessiya bilan bog'liq umumiy actionlar: back, cancel, skip, confirm, edit
+  const s = getSession(chatId);
+  if (!s) {
+    await bot.answerCallbackQuery(query.id, { text: 'Aktiv sessiya topilmadi.' });
+    return;
+  }
+  // faqat sessiya egasi ishlata oladi
+  if (fromId !== s.adminId) {
+    await bot.answerCallbackQuery(query.id, { text: 'Bu tugmani bosish huquqi sizda yo‘q.' });
+    return;
+  }
+
+  if (data === 'action_cancel') {
+    endSession(chatId);
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id }).catch(()=>{});
+    await bot.sendMessage(chatId, '❌ Jarayon bekor qilindi.');
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+
+  if (data === 'action_back') {
+    // oddiy orqaga: steplarni kamaytirish
+    const order = ['awaiting_video','awaiting_name','awaiting_episode_count','awaiting_poster','awaiting_season','confirm'];
+    let idx = order.indexOf(s.step);
+    if (idx <= 0) {
+      await bot.answerCallbackQuery(query.id, { text: 'Orqaga qaytish mumkin emas.' });
+      return;
+    }
+    idx = idx - 1;
+    s.step = order[idx];
+    await bot.sendMessage(chatId, `🔙 Orqaga qaytildi. Hozirgi bosqich: ${s.step}`);
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+
+  if (data === 'action_skip') {
+    // skip bosilganda hozirgi bosqichga bog'liq harakat
+    if (s.step === 'awaiting_poster') {
+      s.data.poster_id = null;
+      s.step = 'awaiting_season';
+      await bot.sendMessage(chatId, '🟢 Poster skip qilindi. Endi faslni kiriting yoki Skip bosing.', sessionStepKeyboard({ allowBack: true, allowSkip: true }));
+    } else if (s.step === 'awaiting_season') {
+      s.data.season = null;
+      s.step = 'confirm';
+      const summary = [
+        `📌 Anime nomi: ${s.data.name || '—'}`,
+        `📆 Fasl: ${s.data.season ?? '—'}`,
+        `🎞️ Qism soni: ${s.data.episode_count ?? '—'}`,
+        `🎥 Video file_id: ${s.data.video_id ?? '—'}`,
+        `🖼️ Poster file_id: ${s.data.poster_id ?? '—'}`
+      ].join('\n');
+      await bot.sendMessage(chatId, 'Yakuniy ma\'lumotlar:\n\n' + summary, confirmKeyboard());
+    } else {
+      await bot.sendMessage(chatId, 'Skip bu bosqich uchun mavjud emas.');
+    }
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+
+  if (data === 'action_confirm') {
+    // saqlash
+    const id = newAnimeId();
+    const anime = {
+      id,
+      name: s.data.name || '',
+      season: s.data.season || null,
+      episode_count: s.data.episode_count || 0,
+      video_id: s.data.video_id || '',
+      poster_id: s.data.poster_id || ''
+    };
+    DB.animes.push(anime);
+    await saveDB();
+    await bot.sendMessage(chatId, `✅ Anime saqlandi (ID: ${id}).`);
+    endSession(chatId);
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+
+  if (data === 'action_edit') {
+    // oddiy variant: adminga qaysi maydonni o'zgartirishni so'raymiz
+    await bot.sendMessage(chatId, 'Qaysi maydonni tahrirlashni xohlaysiz?', {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: 'Nom', callback_data: 'edit_name' }, { text: 'Qism soni', callback_data: 'edit_episode_count' }],
+          [{ text: 'Poster', callback_data: 'edit_poster' }, { text: 'Fasl', callback_data: 'edit_season' }],
+          [{ text: 'Ortga (Bekor)', callback_data: 'edit_cancel' }]
+        ]
+      }
+    });
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+
+  // edit_* tugmalarini boshqarish
+  if (data === 'edit_name') {
+    s.step = 'awaiting_name';
+    await bot.sendMessage(chatId, '✏️ Yangi nom kiriting:');
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+  if (data === 'edit_episode_count') {
+    s.step = 'awaiting_episode_count';
+    await bot.sendMessage(chatId, '✏️ Yangi qism sonini kiriting (raqam):');
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+  if (data === 'edit_poster') {
+    s.step = 'awaiting_poster';
+    await bot.sendMessage(chatId, '🖼️ Yangi poster yuboring (photo):', sessionStepKeyboard({ allowBack: true, allowSkip: true }));
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+  if (data === 'edit_season') {
+    s.step = 'awaiting_season';
+    await bot.sendMessage(chatId, '✏️ Yangi fasl raqamini kiriting yoki Skip bosing:', sessionStepKeyboard({ allowBack: true, allowSkip: true }));
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+  if (data === 'edit_cancel') {
+    // qaytib yakuniy tasdiqqa
+    s.step = 'confirm';
+    const summary = [
+      `📌 Anime nomi: ${s.data.name || '—'}`,
+      `📆 Fasl: ${s.data.season ?? '—'}`,
+      `🎞️ Qism soni: ${s.data.episode_count ?? '—'}`,
+      `🎥 Video file_id: ${s.data.video_id ?? '—'}`,
+      `🖼️ Poster file_id: ${s.data.poster_id ?? '—'}`
+    ].join('\n');
+    await bot.sendMessage(chatId, 'Yakuniy ma\'lumotlar:\n\n' + summary, confirmKeyboard());
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+
+  await bot.answerCallbackQuery(query.id, { text: 'Noma\'lum amal.' });
+});
+
+// ---------- Inline query qidiruv (inline mode) ----------
+bot.on('inline_query', async (iq) => {
+  const q = (iq.query || '').trim().toLowerCase();
+  let matches = DB.animes || [];
+  if (q) {
+    matches = matches.filter(a => (a.name || '').toLowerCase().includes(q));
+  }
+  // eng yuqori 7 natija
+  matches = matches.slice(0, 7);
+
+  const results = matches.map(a => {
+    // Agar poster_id bo'lsa photo_file_id sifatida inline photo yuboramiz
+    const captionLines = [`📺 ${a.name}`, `🎞️ Qism: ${a.episode_count}`, `📆 Fasl: ${a.season ?? '—'}`];
+    const caption = captionLines.join(' | ');
+    if (a.poster_id) {
+      return {
+        type: 'photo',
+        id: String(a.id),
+        photo_file_id: a.poster_id,
+        caption: caption,
+        reply_markup: {
+          inline_keyboard: [[{ text: 'Ko‘rish', callback_data: `view_${a.id}` }]]
+        }
+      };
+    } else {
+      // poster yo'q bo'lsa article yuboramiz (matn)
+      return {
+        type: 'article',
+        id: String(a.id),
+        title: a.name,
+        input_message_content: {
+          message_text: `📺 ${a.name}\n🎞️ Qism: ${a.episode_count}\n📆 Fasl: ${a.season ?? '—'}`
+        },
+        reply_markup: {
+          inline_keyboard: [[{ text: 'Ko‘rish', callback_data: `view_${a.id}` }]]
+        },
+        description: `Qism: ${a.episode_count}, Fasl: ${a.season ?? '—'}`
+      };
+    }
+  });
+
+  try {
+    await bot.answerInlineQuery(iq.id, results, { cache_time: INLINE_CACHE_SECONDS, is_personal: true });
+  } catch (e) {
+    console.error('inline_query xato:', e?.message || e);
+  }
+});
+
+// ---------- Foydali: /listanimes (adminlar uchun) ----------
+bot.onText(/\/listanimes/, async (msg) => {
+  const chatId = msg.chat.id;
+  const fromId = msg.from.id;
+  if (!isAdmin(fromId)) {
+    await bot.sendMessage(chatId, '❌ Bu buyruq faqat adminlar uchun.');
+    return;
+  }
+  if (!DB.animes.length) {
+    await bot.sendMessage(chatId, 'Hozircha saqlangan anime yo‘q.');
+    return;
+  }
+  const parts = DB.animes.map(a => `ID:${a.id} — ${a.name} | Qism: ${a.episode_count} | Fasl: ${a.season ?? '—'}`).join('\n');
+  await bot.sendMessage(chatId, 'Saqlangan anime roʻyxati:\n\n' + parts);
+});
+
+// Agar webhook o'rnatilmagan bo'lsa, polling yoqish (mahalliy test uchun)
+if (!WEBHOOK_URL) {
+  console.log('Webhook URL yo‘q — fallback: polling yoqilmoqda (faqat test uchun).');
+  bot.options.polling = true;
+  bot.startPolling?.();
+}
