@@ -25,7 +25,7 @@ const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'animebot';
 let ADMIN_IDS = [];
 let dbClient, DB, animesCol, configCol;
 const sessions = new Map();
-const INLINE_CACHE_SECONDS = 10; // Inline natijalarni 10 soniya keshda saqlash
+const INLINE_CACHE_SECONDS = 10;
 const bot = new TelegramBot(token, { polling: !WEBHOOK_URL });
 let BOT_USERNAME = null;
 const BOT_START_TIME = Math.floor(Date.now() / 1000);
@@ -64,7 +64,7 @@ async function setupFirstAdmin(msg) {
 // =================== ADMIN TAYINLASH BLOKI TUGADI =====================
 // ======================================================================
 
-// ------------------ MONGO DB FUNKSIYALARI ------------------
+// ------------------ MONGO DB VA YORDAMCHI FUNKSIYALAR ------------------
 async function initMongo() {
   try {
     console.log('MongoDB ga ulanilmoqda...');
@@ -109,7 +109,24 @@ async function getAnimeById(idString) {
   }
 }
 
-// ------------------ SESSIYA YORDAMCHILARI ------------------
+/**
+ * file_id dan vaqtinchalik (1 soatlik) URL generatsiya qiladi.
+ * @param {string} fileId Rasmning file_id si
+ * @returns {Promise<string|null>} Rasmning to'liq URL manzili yoki xatolik bo'lsa null
+ */
+async function getFileUrl(fileId) {
+    if (!fileId) return null;
+    try {
+        const file = await bot.getFile(fileId);
+        return `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+    } catch (error) {
+        console.warn(`file_id dan URL olib bo'lmadi: ${fileId}`, error.message);
+        return null;
+    }
+}
+
+
+// ------------------ SESSIYA YORDAMCHILARI (o'zgarishsiz) ------------------
 function startSession(chatId, adminId) {
   const s = { adminId, step: 'awaiting_video', data: { name: null, season: null, episode_count: null, video_id: null, poster_id: null } };
   sessions.set(String(chatId), s);
@@ -169,11 +186,8 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
 });
 
 async function sendFormattedAnime(chatId, animeId) {
-    const sendingMsg = await bot.sendMessage(chatId, "⏳ So'rovingiz qabul qilindi, anime qidirilmoqda...", { protect_content: true });
+    await bot.sendMessage(chatId, "⏳ So'rovingiz qabul qilindi, anime qidirilmoqda...", { protect_content: true });
     const anime = await getAnimeById(animeId);
-    
-    // Yuborilgan "qidirilmoqda..." xabarini o'chiramiz
-    await bot.deleteMessage(chatId, sendingMsg.message_id).catch(() => {});
 
     if (!anime) {
         return bot.sendMessage(chatId, "❌ Afsus, bu ID bo'yicha anime topilmadi yoki ID yaroqsiz.", { protect_content: true });
@@ -228,6 +242,7 @@ bot.on('message', async (msg) => {
 });
 
 async function handleSessionMessage(msg, session) {
+    // Bu funksiya o'zgarishsiz qoladi...
     const chatId = msg.chat.id;
     try {
         const protectedOptions = { protect_content: true };
@@ -269,87 +284,66 @@ bot.on('callback_query', async (query) => {
     const chatId = message.chat.id;
 
     const s = getSession(chatId);
-    if (s && from.id === s.adminId) {
-        await bot.answerCallbackQuery(query.id);
-        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: message.message_id }).catch(() => {});
+    if (!s || from.id !== s.adminId) return bot.answerCallbackQuery(query.id, { text: 'Siz uchun emas.' });
+    
+    await bot.answerCallbackQuery(query.id);
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: message.message_id }).catch(() => {});
 
-        if (data === 'action_cancel') { endSession(chatId); return bot.sendMessage(chatId, '❌ Jarayon bekor qilindi.', { protect_content: true }); }
-        
-        if (data === 'action_confirm') {
-            try {
-                const insertedId = await insertAnimeToDB(s.data); 
-                await bot.sendMessage(chatId, `✅ Anime muvaffaqiyatli saqlandi (ID: ${insertedId.toString()}).`, { protect_content: true });
-            } catch (e) { 
-                console.error("action_confirm xatosi:", e);
-                await bot.sendMessage(chatId, 'Saqlashda xato yuz berdi: ' + e.message, { protect_content: true }); 
-            }
-            endSession(chatId);
+    if (data === 'action_cancel') { endSession(chatId); return bot.sendMessage(chatId, '❌ Jarayon bekor qilindi.', { protect_content: true }); }
+    
+    if (data === 'action_confirm') {
+        try {
+            const insertedId = await insertAnimeToDB(s.data); 
+            await bot.sendMessage(chatId, `✅ Anime muvaffaqiyatli saqlandi (ID: ${insertedId.toString()}).`, { protect_content: true });
+        } catch (e) { 
+            console.error("action_confirm xatosi:", e);
+            await bot.sendMessage(chatId, 'Saqlashda xato yuz berdi: ' + e.message, { protect_content: true }); 
         }
-    } else {
-        await bot.answerCallbackQuery(query.id, { text: 'Bu tugma siz uchun emas.' });
+        endSession(chatId);
     }
 });
 
 
 // ======================================================================
-// ========= YANGILANGAN INLINE QIDIRUV MANTIG'I =======================
+// ========= YANGILANGAN INLINE QIDIRUV MANTIG'I (SIZNING TAKLIFINGIZ ASOSIDA) =======================
 // ======================================================================
 bot.on('inline_query', async (iq) => {
     try {
         const query = iq.query.trim();
-        // Foydalanuvchi yozgan so'rov bo'yicha bazadan animelarni qidiramiz
-        const matches = await findAnimesByQuery(query, 20); // Natijalar sonini 20 tagacha chekladik
-        
-        // Natijalarni Telegram 'InlineQueryResultPhoto' formatiga o'tkazamiz
-        const results = matches
-            // Faqat posteri (`poster_id`) mavjud bo'lgan animelarni olamiz.
-            .filter(anime => anime.poster_id) 
-            .map(anime => {
-                // Bu obyekt har bir inline natija uchun mas'ul
-                return {
-                    type: 'photo', // Natija turi rasm ekanligini bildiradi
-                    id: anime._id.toString(), // Har bir natija uchun unikal ID
-                    
-                    // Rasm uchun URL o'rniga Telegramdagi file_id ni ishlatamiz
-                    photo_file_id: anime.poster_id, 
-                    
-                    // Ro'yxatda ko'rinadigan sarlavha va tavsif
-                    title: anime.name,
-                    description: `Fasl: ${anime.season ?? 'N/A'} | Qismlar: ${anime.episode_count ?? 'N/A'}`,
+        const matches = await findAnimesByQuery(query, 20);
 
-                    // Foydalanuvchi ro'yxatdan biror elementni tanlaganidan so'ng
-                    // yuboriladigan xabar matni (caption) va tugma.
-                    caption: `• Anime: ${anime.name}\n╭━━━━━━━━━━━━━━━━━━━━━━━━━\n• Sezon: ${anime.season ?? 'N/A'}\n• Ongoin\n• Qism : ${anime.episode_count ?? 'N/A'}\n• Sifat : 1080 p\n╰━━━━━━━━━━━━━━━━━━━━━━━━━\n\n‣ Kanal: @animedia_fandub`,
-                    reply_markup: {
-                        inline_keyboard: [
-                            [
-                                {
-                                    text: '🎬 Videoni ko‘rish',
-                                    // Buni bosganda botga `start` buyrug'i bilan ID yuboriladi
-                                    // Bu esa sendFormattedAnime funksiyasini ishga tushiradi
-                                    url: `https://t.me/${BOT_USERNAME}?start=${anime._id.toString()}`
-                                }
-                            ]
-                        ]
-                    }
-                };
-            });
-            
-        // Tayyor natijalarni foydalanuvchiga yuboramiz
-        await bot.answerInlineQuery(iq.id, results, { 
-            cache_time: INLINE_CACHE_SECONDS
+        const resultsPromises = matches.map(async (anime) => {
+            const thumbUrl = await getFileUrl(anime.poster_id);
+
+            return {
+                type: 'article',
+                id: anime._id.toString(),
+                title: anime.name,
+                description: `Fasl: ${anime.season ?? 'N/A'} | Qism: ${anime.episode_count ?? 'N/A'}`,
+                thumb_url: thumbUrl, // Kichik rasm uchun URL
+                input_message_content: {
+                    message_text: `⏳ Siz "${anime.name}" animesini tanladingiz.\n\nUni ochish uchun quyidagi "Ko'rish" tugmasini bosing.`
+                },
+                reply_markup: {
+                    inline_keyboard: [[
+                        {
+                            text: '🎬 Ko‘rish',
+                            url: `https://t.me/${BOT_USERNAME}?start=${anime._id.toString()}`
+                        }
+                    ]]
+                }
+            };
         });
+        
+        const results = await Promise.all(resultsPromises);
+        await bot.answerInlineQuery(iq.id, results, { cache_time: INLINE_CACHE_SECONDS });
 
     } catch (e) { 
         console.error('inline_query xatosi:', e);
-        // Xatolik yuz bersa, bo'sh javob qaytaramiz
-        await bot.answerInlineQuery(iq.id, [], { cache_time: 0 }).catch(() => {});
+        // Xatolik yuzaga kelsa, foydalanuvchiga bo'sh javob yuborish
+        await bot.answerInlineQuery(iq.id, []).catch(()=>{});
     }
 });
-
-// ======================================================================
-// =================== INLINE QIDIRUV BLOKI TUGADI ======================
-// ======================================================================
 
 
 async function handleAddAnime(msg) {
@@ -362,13 +356,9 @@ async function handleListAnimes(msg) {
     if (!ADMIN_IDS.includes(msg.from.id)) return;
     const rows = await listAllAnimes();
     if (!rows.length) return bot.sendMessage(msg.chat.id, 'Saqlangan animelar yo‘q.', { protect_content: true });
-    
-    let text = "📜 Barcha animelar ro'yxati:\n\n";
-    text += rows.map(a => `🆔: \`${a._id.toString()}\`\n📝 Nomi: ${a.name}`).join('\n\n');
-
-    // Telegramda bitta xabar 4096 belgidan oshmasligi kerak
+    const text = rows.map(a => `🆔 ${a._id.toString()}\n— ${a.name}`).join('\n\n');
     for (let i = 0; i < text.length; i += 4096) {
-        await bot.sendMessage(msg.chat.id, text.substring(i, i + 4096), { parse_mode: 'Markdown', protect_content: true });
+        await bot.sendMessage(msg.chat.id, text.substring(i, i + 4096), { protect_content: true });
     }
 }
 
