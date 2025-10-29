@@ -109,7 +109,7 @@ async function getAnimeById(idString) {
   }
 }
 
-// ------------------ SESSIYA YORDAMCHILARI ------------------
+// ------------------ SESSIYA YORDAMCHILARI (o'zgarishsiz) ------------------
 function startSession(chatId, adminId) {
   const s = { adminId, step: 'awaiting_video', data: { name: null, season: null, episode_count: null, video_id: null, poster_id: null } };
   sessions.set(String(chatId), s);
@@ -225,6 +225,7 @@ bot.on('message', async (msg) => {
 });
 
 async function handleSessionMessage(msg, session) {
+    // ... Bu qism o'zgarishsiz qoladi
     const chatId = msg.chat.id;
     try {
         const protectedOptions = { protect_content: true };
@@ -291,22 +292,13 @@ bot.on('callback_query', async (query) => {
 // ======================================================================
 bot.on('inline_query', async (iq) => {
     try {
-        const matches = await findAnimesByQuery(iq.query.trim(), 20); // Ko'proq natija topamiz
-
-        // Har bir rasm uchun vaqtinchalik URL olamiz
-        const resultsPromises = matches.map(async (a) => {
-            let thumbUrl = null;
-            if (a.poster_id) {
-                try {
-                    // getFileLink vaqtinchalik (1 soatlik) URL beradi
-                    thumbUrl = await bot.getFileLink(a.poster_id);
-                } catch (e) {
-                    console.warn(`file_id uchun URL olib bo'lmadi: ${a.poster_id}`);
-                }
-            }
-            
-            // Chiroyli matnni tayyorlash
-            const caption = `• Anime: ${a.name}
+        const matches = await findAnimesByQuery(iq.query.trim());
+        
+        // Faqat posteri bor animelarni filtrlash
+        const results = matches
+            .filter(a => a.poster_id) // Faqat posteri borlarni olamiz
+            .map(a => {
+                const caption = `• Anime: ${a.name}
 ╭━━━━━━━━━━━━━━━━━━━━━━━━━
 • Sezon: ${a.season ?? 'N/A'}
 • Ongoin
@@ -316,44 +308,24 @@ bot.on('inline_query', async (iq) => {
 
 ‣ Kanal: @animedia_fandub`;
 
-            if (a.poster_id) {
-                // Rasm bo'lsa, 'photo' turidagi natija
                 return {
                     type: 'photo',
                     id: a._id.toString(),
                     photo_file_id: a.poster_id,
+                    // Telegram `photo_file_id` dan kichik rasmni avtomatik yaratadi
+                    // title va description inline natija ro'yxatida ko'rinadi
+                    title: a.name,
+                    description: `Fasl: ${a.season ?? 'N/A'}, Qism: ${a.episode_count ?? 'N/A'}`,
                     caption: caption,
                     reply_markup: {
                         inline_keyboard: [[{
                             text: '🎬 Videoni ko‘rish',
                             url: `https://t.me/${BOT_USERNAME}?start=${a._id.toString()}`
                         }]]
-                    },
-                    // Kichik rasm uchun olingan URL
-                    thumb_url: thumbUrl 
+                    }
                 };
-            } else {
-                // Rasm bo'lmasa, 'article' turidagi natija
-                return {
-                    type: 'article',
-                    id: a._id.toString(),
-                    title: a.name,
-                    input_message_content: {
-                        message_text: caption
-                    },
-                    reply_markup: {
-                        inline_keyboard: [[{
-                            text: '🎬 Videoni ko‘rish',
-                            url: `https://t.me/${BOT_USERNAME}?start=${a._id.toString()}`
-                        }]]
-                    },
-                    description: `Qism: ${a.episode_count}, Fasl: ${a.season ?? '—'}`,
-                    thumb_url: thumbUrl // rasm bo'lmasa ham null bo'ladi
-                };
-            }
-        });
-
-        const results = await Promise.all(resultsPromises);
+            });
+            
         await bot.answerInlineQuery(iq.id, results, { cache_time: INLINE_CACHE_SECONDS });
 
     } catch (e) { 
