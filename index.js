@@ -183,7 +183,7 @@ if (WEBHOOK_URL) {
   console.log('WEBHOOK_URL yo\'q — webhook o\'rnatilmadi. (RENDER_EXTERNAL_URL belgilanmagan)');
 }
 
-app.get('/', (req, res) => res.send('Bot ishlayapti ✅'));
+app.get('/', (req, res) => res.send('Bot ishlayapti ✅ 1111111111111'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // ---------- Bot username fetch ----------
