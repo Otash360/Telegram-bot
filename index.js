@@ -118,9 +118,9 @@ async function getFileUrl(fileId) {
     try {
         const file = await bot.getFile(fileId);
         console.log(file);
-        
+
         if (!file || !file.file_path) return null;
-        return `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+        return `https://api.telegram.org/file/bot${token}/${file.file_id}/${file.file_path}`;
     } catch (error) {
         console.warn(`file_id dan URL olib bo'lmadi: ${fileId} -> ${error.message}`);
         return null;
