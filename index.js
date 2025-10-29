@@ -31,8 +31,14 @@ let BOT_USERNAME = null;
 const BOT_START_TIME = Math.floor(Date.now() / 1000);
 
 // ======================================================================
-// ========= BIR MARTALIK ADMIN TAYINLASH FUNKSIYALARI ==================
 // ======================================================================
+// ========= BIR MARTALIK ADMIN TAYINLASH FUNKSIYALARI ==================
+//
+// BU BLOKNI O'CHIRMANG! /start buyrug'i shu funksiyalarni ishlatadi.
+// Admin tayinlangandan so'ng, bu blokni izohga olsangiz bo'ladi.
+//
+// ======================================================================
+
 async function loadAdminsFromDB() {
     try {
         const config = await configCol.findOne({ _id: 'bot_config' });
@@ -149,18 +155,17 @@ bot.on('error', (err) => console.error('Botda umumiy xato:', err));
 
 // ------------------ BOT BUYRUQLARI VA HANDLERLARI ------------------
 
-// YANGILANGAN /start buyrug'i (deep linking uchun)
 bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
     const deepLinkPayload = match[1];
 
     if (deepLinkPayload) {
-        // Agar /start buyrug'i ID bilan kelsa, yangi funksiyani chaqiramiz
         return await sendFormattedAnime(chatId, deepLinkPayload);
     }
-
-    // Agar ID bo'lmasa, oddiy /start logikasi ishlaydi
+    
+    // XATOLIKNI TUZATISH UCHUN MANA SHU FUNKSIYA MUHIM
     await setupFirstAdmin(msg);
+
     if (ADMIN_IDS.includes(msg.from.id)) {
         const text = `👋 Assalomu alaykum, Admin!`;
         const kb = { reply_markup: { keyboard: [[{ text: '➕ Yangi anime qo‘shish' }], [{ text: '📜 Barcha animelar' }]], resize_keyboard: true } };
@@ -170,15 +175,6 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     }
 });
 
-
-// ======================================================================
-// ========= YANGI FUNKSIYA: FORMATLANGAN ANIME YUBORISH ==============
-// ======================================================================
-/**
- * Foydalanuvchiga animeni chiroyli formatda (rasm+matn) va ketidan videoni yuboradi.
- * @param {number} chatId Foydalanuvchi chat IDsi
- * @param {string} animeId Animeninng MongoDB dagi _id si
- */
 async function sendFormattedAnime(chatId, animeId) {
     await bot.sendMessage(chatId, "⏳ So'rovingiz qabul qilindi, anime qidirilmoqda...");
     const anime = await getAnimeById(animeId);
@@ -187,7 +183,6 @@ async function sendFormattedAnime(chatId, animeId) {
         return bot.sendMessage(chatId, "❌ Afsus, bu ID bo'yicha anime topilmadi yoki ID yaroqsiz.");
     }
 
-    // 1. Chiroyli matnni (caption) tayyorlash
     const caption = `• Anime: ${anime.name}
 ╭━━━━━━━━━━━━━━━━━━━━━━━━━
 • Sezon: ${anime.season ?? 'N/A'}
@@ -198,12 +193,10 @@ async function sendFormattedAnime(chatId, animeId) {
 
 ‣ Kanal: @animedia_fandub`;
 
-    // 2. Rasmni shu matn bilan yuborish
     try {
         if (anime.poster_id) {
             await bot.sendPhoto(chatId, anime.poster_id, { caption: caption });
         } else {
-            // Agar rasm bo'lmasa, matnning o'zini yuboramiz
             await bot.sendMessage(chatId, caption);
         }
     } catch (e) {
@@ -211,7 +204,6 @@ async function sendFormattedAnime(chatId, animeId) {
         await bot.sendMessage(chatId, "Rasm faylini yuborishda xatolik yuz berdi. Lekin video hozir yuboriladi.");
     }
 
-    // 3. Videoni alohida yuborish
     try {
         if (anime.video_id) {
             await bot.sendVideo(chatId, anime.video_id, { supports_streaming: true });
@@ -223,17 +215,15 @@ async function sendFormattedAnime(chatId, animeId) {
         await bot.sendMessage(chatId, "Video faylini yuborishda xatolik yuz berdi. Adminga xabar bering.");
     }
 }
-// ======================================================================
-// ======================================================================
-
 
 bot.on('message', async (msg) => {
     if (msg.date < BOT_START_TIME) return;
+    if (msg.text && msg.text.startsWith('/')) return; // /start allaqachon alohida ishlangan
 
     const s = getSession(msg.chat.id);
     if (s && s.adminId === msg.from.id) return handleSessionMessage(msg, s);
 
-    if (msg.text && !msg.text.startsWith('/') && ADMIN_IDS.includes(msg.from.id)) {
+    if (msg.text && ADMIN_IDS.includes(msg.from.id)) {
         switch (msg.text) {
             case '➕ Yangi anime qo‘shish': return handleAddAnime(msg);
             case '📜 Barcha animelar': return handleListAnimes(msg);
@@ -242,7 +232,6 @@ bot.on('message', async (msg) => {
 });
 
 async function handleSessionMessage(msg, session) {
-    // Bu funksiya o'zgarishsiz qoladi
     const chatId = msg.chat.id;
     try {
         switch (session.step) {
