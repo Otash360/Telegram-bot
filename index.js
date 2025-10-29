@@ -29,7 +29,7 @@ const sessions = new Map();
 const INLINE_CACHE_SECONDS = 10;
 const bot = new TelegramBot(token, { polling: !WEBHOOK_URL });
 let BOT_USERNAME = null;
-const BOT_START_TIME = Math.floor(Date.now() / 1000); // Bot ishga tushgan vaqt (sekundlarda)
+const BOT_START_TIME = Math.floor(Date.now() / 1000);
 
 // ======================================================================
 // ======================================================================
@@ -100,18 +100,17 @@ async function initMongo() {
  * Atomik ravishda yangi ID generatsiya qiladi.
  */
 async function getNextSequence(name = 'animeid') {
-  console.log(`[getNextSequence] "${name}" uchun yangi ID olinmoqda...`);
   const result = await countersCol.findOneAndUpdate(
     { _id: name },
     { $inc: { seq: 1 } },
     { upsert: true, returnDocument: 'after' }
   );
   
-  // Natijani to'liq tekshirish
-  if (result && result.value && typeof result.value.seq === 'number') {
-    console.log(`[getNextSequence] Muvaffaqiyatli! Yangi ID: ${result.value.seq}`);
-    return result.value.seq;
+  // YECHIM: Natijani to'g'ridan-to'g'ri tekshirish (`result.value` o'rniga)
+  if (result && typeof result.seq === 'number') {
+    return result.seq;
   } else {
+    // Agar kutilmagan javob kelsa (bu deyarli imkonsiz, lekin himoya uchun)
     console.error('[getNextSequence] KRITIK XATO: findOneAndUpdate metodi kutilgan dokumentni qaytarmadi. MongoDB javobi:', JSON.stringify(result));
     throw new Error('Ma\'lumotlar bazasidan yangi ID generatsiya qilib bo\'lmadi.');
   }
@@ -156,12 +155,8 @@ if (WEBHOOK_URL) {
   const app = express(); app.use(express.json());
   bot.setWebHook(WEBHOOK_URL).then(() => console.log('Webhook o\'rnatildi:', WEBHOOK_URL)).catch(err => console.error('Webhook xatosi:', err));
   
-  // YECHIM: Webhook orqali kelgan eski so'rovlarni filtrlash
   app.post(`/webhook/${token}`, (req, res) => {
-    if (req.body && req.body.message && req.body.message.date < BOT_START_TIME) {
-        console.log(`Eski xabar (webhook) e'tiborsiz qoldirildi.`);
-        return res.sendStatus(200);
-    }
+    if (req.body?.message?.date < BOT_START_TIME) return res.sendStatus(200);
     bot.processUpdate(req.body);
     res.sendStatus(200);
   });
@@ -178,7 +173,6 @@ bot.on('error', (err) => console.error('Botda umumiy xato:', err));
 
 // ------------------ BOT BUYRUQLARI VA HANDLERLARI ------------------
 
-// /start buyrug'i
 bot.onText(/\/start/, async (msg) => {
     await setupFirstAdmin(msg);
     if (ADMIN_IDS.includes(msg.from.id)) {
@@ -190,12 +184,8 @@ bot.onText(/\/start/, async (msg) => {
     }
 });
 
-// Barcha xabarlarni qayta ishlaydigan YAGONA handler
 bot.on('message', async (msg) => {
-    // YECHIM: Polling rejimida kelgan eski so'rovlarni filtrlash
-    if (msg.date < BOT_START_TIME) {
-        return console.log(`Eski xabar (polling) e'tiborsiz qoldirildi.`);
-    }
+    if (msg.date < BOT_START_TIME) return;
 
     const s = getSession(msg.chat.id);
     if (s && s.adminId === msg.from.id) return handleSessionMessage(msg, s);
@@ -217,22 +207,18 @@ async function handleSessionMessage(msg, session) {
                 if (!videoId) return bot.sendMessage(chatId, '❗ Iltimos, video fayl yuboring.', sessionStepKeyboard());
                 session.data.video_id = videoId; session.step = 'awaiting_name';
                 return bot.sendMessage(chatId, '✅ Video qabul qilindi.\n\nEndi anime nomini kiriting 📝');
-            
             case 'awaiting_name':
                 if (!msg.text) return bot.sendMessage(chatId, '❗ Iltimos, matn yuboring.');
                 session.data.name = msg.text.trim(); session.step = 'awaiting_poster';
                 return bot.sendMessage(chatId, '🖼️ Endi anime posterini (rasmini) yuboring yoki o‘tkazib yuboring.', sessionStepKeyboard({ allowSkip: true }));
-
             case 'awaiting_poster':
                 session.data.poster_id = msg.photo?.[msg.photo.length - 1]?.file_id || null; 
                 session.step = 'awaiting_episode_count';
                 return bot.sendMessage(chatId, '🎞️ Endi qismlar sonini kiriting (raqam). Bilmasangiz "0" yuboring.');
-
             case 'awaiting_episode_count':
                 if (!msg.text || isNaN(Number(msg.text.trim()))) return bot.sendMessage(chatId, '❗ Faqat raqam kiriting.');
                 session.data.episode_count = Number(msg.text.trim()); session.step = 'awaiting_season';
                 return bot.sendMessage(chatId, '📆 Fasl raqamini kiriting yoki o‘tkazib yuboring.', sessionStepKeyboard({ allowSkip: true }));
-            
             case 'awaiting_season':
                 session.data.season = (msg.text && !isNaN(Number(msg.text.trim()))) ? Number(msg.text.trim()) : null; 
                 session.step = 'confirm';
@@ -246,11 +232,7 @@ async function handleSessionMessage(msg, session) {
 }
 
 bot.on('callback_query', async (query) => {
-    // YECHIM: Eskirgan callback so'rovlarini e'tiborsiz qoldirish
-    if (query.message && query.message.date < BOT_START_TIME) {
-        return console.log(`Eski callback so'rovi e'tiborsiz qoldirildi.`);
-    }
-
+    if (query.message?.date < BOT_START_TIME) return;
     const { data, from, message } = query;
     const chatId = message.chat.id;
 
@@ -319,4 +301,4 @@ async function handleListAnimes(msg) {
 (async () => {
     await initMongo();
     console.log('Bot to`liq ishga tushdi va buyruqlarni qabul qilishga tayyor.');
-})(); 
+})();
