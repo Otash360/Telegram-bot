@@ -7,8 +7,8 @@ import { MongoClient, ObjectId } from 'mongodb';
 // ------------------ KONFIGURATSIYA ------------------
 const token = process.env.BOT_TOKEN;
 if (!token) {
-  console.error('XATO: BOT_TOKEN muhit oʻzgaruvchisi topilmadi.');
-  process.exit(1);
+    console.error('XATO: BOT_TOKEN muhit oʻzgaruvchisi topilmadi.');
+    process.exit(1);
 }
 
 const PORT = process.env.PORT || 3000;
@@ -52,7 +52,7 @@ async function setupFirstAdmin(msg) {
     try {
         await configCol.updateOne({ _id: 'bot_config' }, { $set: { admin_ids: ADMIN_IDS } }, { upsert: true });
         console.log(`🎉 BIRINCHI ADMIN TAYINLANDI! ID: ${fromId}.`);
-        await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`, { protect_content: true }).catch(()=>{});
+        await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`, { protect_content: true }).catch(() => { });
         return true;
     } catch (e) {
         console.error("Birinchi adminni MongoDB'ga saqlashda xato:", e);
@@ -66,30 +66,30 @@ async function setupFirstAdmin(msg) {
 
 // ------------------ MONGO DB VA YORDAMCHI FUNKSIYALAR ------------------
 async function initMongo() {
-  try {
-    console.log('MongoDB ga ulanilmoqda...');
-    dbClient = new MongoClient(MONGO_URI);
-    await dbClient.connect();
-    await dbClient.db("admin").command({ ping: 1 });
-    console.log("MongoDB ga muvaffaqiyatli ulanildi! ✅");
+    try {
+        console.log('MongoDB ga ulanilmoqda...');
+        dbClient = new MongoClient(MONGO_URI);
+        await dbClient.connect();
+        await dbClient.db("admin").command({ ping: 1 });
+        console.log("MongoDB ga muvaffaqiyatli ulanildi! ✅");
 
-    DB = dbClient.db(MONGO_DB_NAME);
-    animesCol = DB.collection('animes');
-    configCol = DB.collection('config');
-    
-    await animesCol.createIndex({ name: 'text' }).catch(() => {});
-    await loadAdminsFromDB();
+        DB = dbClient.db(MONGO_DB_NAME);
+        animesCol = DB.collection('animes');
+        configCol = DB.collection('config');
 
-  } catch (e) {
-    console.error("\n--- MONGO DB ULASHDA KRITIK XATO ---\n", e.message);
-    process.exit(1);
-  }
+        await animesCol.createIndex({ name: 'text' }).catch(() => { });
+        await loadAdminsFromDB();
+
+    } catch (e) {
+        console.error("\n--- MONGO DB ULASHDA KRITIK XATO ---\n", e.message);
+        process.exit(1);
+    }
 }
 
 async function insertAnimeToDB(animeObj) {
-  const doc = { ...animeObj, created_at: new Date() };
-  const result = await animesCol.insertOne(doc);
-  return result.insertedId;
+    const doc = { ...animeObj, created_at: new Date() };
+    const result = await animesCol.insertOne(doc);
+    return result.insertedId;
 }
 
 async function findAnimesByQuery(q, limit = 10) {
@@ -100,13 +100,13 @@ async function findAnimesByQuery(q, limit = 10) {
 async function listAllAnimes() { return await animesCol.find().sort({ created_at: -1 }).toArray(); }
 
 async function getAnimeById(idString) {
-  try {
-    if (!ObjectId.isValid(idString)) return null;
-    return await animesCol.findOne({ _id: new ObjectId(idString) });
-  } catch (error) {
-    console.error("getAnimeById xatosi:", error);
-    return null;
-  }
+    try {
+        if (!ObjectId.isValid(idString)) return null;
+        return await animesCol.findOne({ _id: new ObjectId(idString) });
+    } catch (error) {
+        console.error("getAnimeById xatosi:", error);
+        return null;
+    }
 }
 
 /**
@@ -117,44 +117,48 @@ async function getFileUrl(fileId) {
     if (!fileId) return null;
     try {
         const file = await bot.getFile(fileId);
+        console.log(file);
+        
+        if (!file || !file.file_path) return null;
         return `https://api.telegram.org/file/bot${token}/${file.file_path}`;
     } catch (error) {
-        console.warn(`file_id dan URL olib bo'lmadi: ${fileId}`, error.message);
+        console.warn(`file_id dan URL olib bo'lmadi: ${fileId} -> ${error.message}`);
         return null;
     }
 }
 
 
+
 // ------------------ SESSIYA YORDAMCHILARI (o'zgarishsiz) ------------------
 function startSession(chatId, adminId) {
-  const s = { adminId, step: 'awaiting_video', data: { name: null, season: null, episode_count: null, video_id: null, poster_id: null } };
-  sessions.set(String(chatId), s);
+    const s = { adminId, step: 'awaiting_video', data: { name: null, season: null, episode_count: null, video_id: null, poster_id: null } };
+    sessions.set(String(chatId), s);
 }
 function endSession(chatId) { sessions.delete(String(chatId)); }
 function getSession(chatId) { return sessions.get(String(chatId)); }
 function summaryTextForSession(s) {
-  return [ `📌 Nomi: ${s.data.name || '—'}`, `📆 Fasl: ${s.data.season ?? '—'}`, `🎞️ Qism: ${s.data.episode_count ?? '—'}`, `🖼️ Poster: ${s.data.poster_id ? '✅ Bor' : '❌ Yoʻq'}` ].join('\n');
+    return [`📌 Nomi: ${s.data.name || '—'}`, `📆 Fasl: ${s.data.season ?? '—'}`, `🎞️ Qism: ${s.data.episode_count ?? '—'}`, `🖼️ Poster: ${s.data.poster_id ? '✅ Bor' : '❌ Yoʻq'}`].join('\n');
 }
 function sessionStepKeyboard({ allowSkip = false } = {}) {
-  const row = [{ text: '❌ Bekor qilish', callback_data: 'action_cancel' }];
-  if (allowSkip) row.push({ text: '✅ O‘tkazib yuborish', callback_data: 'action_skip' });
-  return { reply_markup: { inline_keyboard: [row] } };
+    const row = [{ text: '❌ Bekor qilish', callback_data: 'action_cancel' }];
+    if (allowSkip) row.push({ text: '✅ O‘tkazib yuborish', callback_data: 'action_skip' });
+    return { reply_markup: { inline_keyboard: [row] } };
 }
 function confirmKeyboard() {
-  return { reply_markup: { inline_keyboard: [[{ text: '✅ Tasdiqlash', callback_data: 'action_confirm' }, { text: '❌ Bekor qilish', callback_data: 'action_cancel' }]] } };
+    return { reply_markup: { inline_keyboard: [[{ text: '✅ Tasdiqlash', callback_data: 'action_confirm' }, { text: '❌ Bekor qilish', callback_data: 'action_cancel' }]] } };
 }
 
 // ------------------ SERVER VA WEBHOOK ------------------
 if (WEBHOOK_URL) {
-  const app = express(); app.use(express.json());
-  bot.setWebHook(WEBHOOK_URL).then(() => console.log('Webhook o\'rnatildi:', WEBHOOK_URL)).catch(err => console.error('Webhook xatosi:', err));
-  app.post(`/webhook/${token}`, (req, res) => {
-    if (req.body?.message?.date < BOT_START_TIME) return res.sendStatus(200);
-    bot.processUpdate(req.body);
-    res.sendStatus(200);
-  });
-  app.get('/', (req, res) => res.send('Bot ishlayapti ✅'));
-  app.listen(PORT, () => console.log(`Server ${PORT}-portda ishlamoqda`));
+    const app = express(); app.use(express.json());
+    bot.setWebHook(WEBHOOK_URL).then(() => console.log('Webhook o\'rnatildi:', WEBHOOK_URL)).catch(err => console.error('Webhook xatosi:', err));
+    app.post(`/webhook/${token}`, (req, res) => {
+        if (req.body?.message?.date < BOT_START_TIME) return res.sendStatus(200);
+        bot.processUpdate(req.body);
+        res.sendStatus(200);
+    });
+    app.get('/', (req, res) => res.send('Bot ishlayapti ✅'));
+    app.listen(PORT, () => console.log(`Server ${PORT}-portda ishlamoqda`));
 } else { console.log('Polling rejimida ishga tushirildi.'); }
 
 // ------------------ BOTNI ISHGA TUSHIRISH VA XATOLIKLARNI USHLASH ------------------
@@ -172,8 +176,8 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     if (deepLinkPayload) {
         return await sendFormattedAnime(chatId, deepLinkPayload);
     }
-    
-    await setupFirstAdmin(msg);
+
+    // await setupFirstAdmin(msg);
 
     if (ADMIN_IDS.includes(msg.from.id)) {
         const text = `👋 Assalomu alaykum, Admin!`;
@@ -257,7 +261,7 @@ async function handleSessionMessage(msg, session) {
                 session.data.name = msg.text.trim(); session.step = 'awaiting_poster';
                 return bot.sendMessage(chatId, '🖼️ Endi anime posterini (rasmini) yuboring yoki o‘tkazib yuboring.', keyboardOptions(sessionStepKeyboard({ allowSkip: true })));
             case 'awaiting_poster':
-                session.data.poster_id = msg.photo?.[msg.photo.length - 1]?.file_id || null; 
+                session.data.poster_id = msg.photo?.[msg.photo.length - 1]?.file_id || null;
                 session.step = 'awaiting_episode_count';
                 return bot.sendMessage(chatId, '🎞️ Endi qismlar sonini kiriting (raqam). Bilmasangiz "0" yuboring.', protectedOptions);
             case 'awaiting_episode_count':
@@ -265,7 +269,7 @@ async function handleSessionMessage(msg, session) {
                 session.data.episode_count = Number(msg.text.trim()); session.step = 'awaiting_season';
                 return bot.sendMessage(chatId, '📆 Fasl raqamini kiriting yoki o‘tkazib yuboring.', keyboardOptions(sessionStepKeyboard({ allowSkip: true })));
             case 'awaiting_season':
-                session.data.season = (msg.text && !isNaN(Number(msg.text.trim()))) ? Number(msg.text.trim()) : null; 
+                session.data.season = (msg.text && !isNaN(Number(msg.text.trim()))) ? Number(msg.text.trim()) : null;
                 session.step = 'confirm';
                 return bot.sendMessage(chatId, 'Yakuniy ma\'lumotlar:\n\n' + summaryTextForSession(session), keyboardOptions(confirmKeyboard()));
         }
@@ -283,19 +287,19 @@ bot.on('callback_query', async (query) => {
 
     const s = getSession(chatId);
     if (!s || from.id !== s.adminId) return bot.answerCallbackQuery(query.id, { text: 'Siz uchun emas.' });
-    
+
     await bot.answerCallbackQuery(query.id);
-    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: message.message_id }).catch(() => {});
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: message.message_id }).catch(() => { });
 
     if (data === 'action_cancel') { endSession(chatId); return bot.sendMessage(chatId, '❌ Jarayon bekor qilindi.', { protect_content: true }); }
-    
+
     if (data === 'action_confirm') {
         try {
-            const insertedId = await insertAnimeToDB(s.data); 
+            const insertedId = await insertAnimeToDB(s.data);
             await bot.sendMessage(chatId, `✅ Anime muvaffaqiyatli saqlandi (ID: ${insertedId.toString()}).`, { protect_content: true });
-        } catch (e) { 
+        } catch (e) {
             console.error("action_confirm xatosi:", e);
-            await bot.sendMessage(chatId, 'Saqlashda xato yuz berdi: ' + e.message, { protect_content: true }); 
+            await bot.sendMessage(chatId, 'Saqlashda xato yuz berdi: ' + e.message, { protect_content: true });
         }
         endSession(chatId);
     }
@@ -312,7 +316,7 @@ bot.on('inline_query', async (iq) => {
 
         // Natijalarni tayyorlash uchun asinxron map dan foydalanamiz
         const resultsPromises = matches.map(async (anime) => {
-            
+
             // `thumb_url` uchun vaqtinchalik URL olamiz
             const thumbUrl = await getFileUrl(anime.poster_id);
 
@@ -326,7 +330,7 @@ bot.on('inline_query', async (iq) => {
 ╰━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ‣ Kanal: @animedia_fandub`;
-            
+
             return {
                 type: 'article',
                 id: anime._id.toString(),
@@ -346,14 +350,14 @@ bot.on('inline_query', async (iq) => {
                 }
             };
         });
-        
+
         const results = await Promise.all(resultsPromises);
         await bot.answerInlineQuery(iq.id, results, { cache_time: INLINE_CACHE_SECONDS });
 
-    } catch (e) { 
+    } catch (e) {
         console.error('inline_query xatosi:', e);
         // Xatolik yuzaga kelsa, foydalanuvchiga bo'sh javob yuborish
-        await bot.answerInlineQuery(iq.id, []).catch(()=>{});
+        await bot.answerInlineQuery(iq.id, []).catch(() => { });
     }
 });
 
