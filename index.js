@@ -25,7 +25,7 @@ const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'animebot';
 let ADMIN_IDS = [];
 let dbClient, DB, animesCol, configCol;
 const sessions = new Map();
-const INLINE_CACHE_SECONDS = 10;
+const INLINE_CACHE_SECONDS = 10; // Inline natijalarni 10 soniya keshda saqlash
 const bot = new TelegramBot(token, { polling: !WEBHOOK_URL });
 let BOT_USERNAME = null;
 const BOT_START_TIME = Math.floor(Date.now() / 1000);
@@ -109,7 +109,7 @@ async function getAnimeById(idString) {
   }
 }
 
-// ------------------ SESSIYA YORDAMCHILARI (o'zgarishsiz) ------------------
+// ------------------ SESSIYA YORDAMCHILARI ------------------
 function startSession(chatId, adminId) {
   const s = { adminId, step: 'awaiting_video', data: { name: null, season: null, episode_count: null, video_id: null, poster_id: null } };
   sessions.set(String(chatId), s);
@@ -169,8 +169,11 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
 });
 
 async function sendFormattedAnime(chatId, animeId) {
-    await bot.sendMessage(chatId, "⏳ So'rovingiz qabul qilindi, anime qidirilmoqda...", { protect_content: true });
+    const sendingMsg = await bot.sendMessage(chatId, "⏳ So'rovingiz qabul qilindi, anime qidirilmoqda...", { protect_content: true });
     const anime = await getAnimeById(animeId);
+    
+    // Yuborilgan "qidirilmoqda..." xabarini o'chiramiz
+    await bot.deleteMessage(chatId, sendingMsg.message_id).catch(() => {});
 
     if (!anime) {
         return bot.sendMessage(chatId, "❌ Afsus, bu ID bo'yicha anime topilmadi yoki ID yaroqsiz.", { protect_content: true });
@@ -225,7 +228,6 @@ bot.on('message', async (msg) => {
 });
 
 async function handleSessionMessage(msg, session) {
-    // ... Bu qism o'zgarishsiz qoladi
     const chatId = msg.chat.id;
     try {
         const protectedOptions = { protect_content: true };
@@ -267,22 +269,24 @@ bot.on('callback_query', async (query) => {
     const chatId = message.chat.id;
 
     const s = getSession(chatId);
-    if (!s || from.id !== s.adminId) return bot.answerCallbackQuery(query.id, { text: 'Siz uchun emas.' });
-    
-    await bot.answerCallbackQuery(query.id);
-    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: message.message_id }).catch(() => {});
+    if (s && from.id === s.adminId) {
+        await bot.answerCallbackQuery(query.id);
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: message.message_id }).catch(() => {});
 
-    if (data === 'action_cancel') { endSession(chatId); return bot.sendMessage(chatId, '❌ Jarayon bekor qilindi.', { protect_content: true }); }
-    
-    if (data === 'action_confirm') {
-        try {
-            const insertedId = await insertAnimeToDB(s.data); 
-            await bot.sendMessage(chatId, `✅ Anime muvaffaqiyatli saqlandi (ID: ${insertedId.toString()}).`, { protect_content: true });
-        } catch (e) { 
-            console.error("action_confirm xatosi:", e);
-            await bot.sendMessage(chatId, 'Saqlashda xato yuz berdi: ' + e.message, { protect_content: true }); 
+        if (data === 'action_cancel') { endSession(chatId); return bot.sendMessage(chatId, '❌ Jarayon bekor qilindi.', { protect_content: true }); }
+        
+        if (data === 'action_confirm') {
+            try {
+                const insertedId = await insertAnimeToDB(s.data); 
+                await bot.sendMessage(chatId, `✅ Anime muvaffaqiyatli saqlandi (ID: ${insertedId.toString()}).`, { protect_content: true });
+            } catch (e) { 
+                console.error("action_confirm xatosi:", e);
+                await bot.sendMessage(chatId, 'Saqlashda xato yuz berdi: ' + e.message, { protect_content: true }); 
+            }
+            endSession(chatId);
         }
-        endSession(chatId);
+    } else {
+        await bot.answerCallbackQuery(query.id, { text: 'Bu tugma siz uchun emas.' });
     }
 });
 
@@ -292,46 +296,60 @@ bot.on('callback_query', async (query) => {
 // ======================================================================
 bot.on('inline_query', async (iq) => {
     try {
-        const matches = await findAnimesByQuery(iq.query.trim());
+        const query = iq.query.trim();
+        // Foydalanuvchi yozgan so'rov bo'yicha bazadan animelarni qidiramiz
+        const matches = await findAnimesByQuery(query, 20); // Natijalar sonini 20 tagacha chekladik
         
-        // Faqat posteri bor animelarni filtrlash
+        // Natijalarni Telegram 'InlineQueryResultPhoto' formatiga o'tkazamiz
         const results = matches
-            .filter(a => a.poster_id) // Faqat posteri borlarni olamiz
-            .map(a => {
-                const caption = `• Anime: ${a.name}
-╭━━━━━━━━━━━━━━━━━━━━━━━━━
-• Sezon: ${a.season ?? 'N/A'}
-• Ongoin
-• Qism : ${a.episode_count ?? 'N/A'}
-• Sifat : 1080 p
-╰━━━━━━━━━━━━━━━━━━━━━━━━━
-
-‣ Kanal: @animedia_fandub`;
-
+            // Faqat posteri (`poster_id`) mavjud bo'lgan animelarni olamiz.
+            .filter(anime => anime.poster_id) 
+            .map(anime => {
+                // Bu obyekt har bir inline natija uchun mas'ul
                 return {
-                    type: 'photo',
-                    id: a._id.toString(),
-                    photo_file_id: a.poster_id,
-                    // Telegram `photo_file_id` dan kichik rasmni avtomatik yaratadi
-                    // title va description inline natija ro'yxatida ko'rinadi
-                    title: a.name,
-                    description: `Fasl: ${a.season ?? 'N/A'}, Qism: ${a.episode_count ?? 'N/A'}`,
-                    caption: caption,
+                    type: 'photo', // Natija turi rasm ekanligini bildiradi
+                    id: anime._id.toString(), // Har bir natija uchun unikal ID
+                    
+                    // Rasm uchun URL o'rniga Telegramdagi file_id ni ishlatamiz
+                    photo_file_id: anime.poster_id, 
+                    
+                    // Ro'yxatda ko'rinadigan sarlavha va tavsif
+                    title: anime.name,
+                    description: `Fasl: ${anime.season ?? 'N/A'} | Qismlar: ${anime.episode_count ?? 'N/A'}`,
+
+                    // Foydalanuvchi ro'yxatdan biror elementni tanlaganidan so'ng
+                    // yuboriladigan xabar matni (caption) va tugma.
+                    caption: `• Anime: ${anime.name}\n╭━━━━━━━━━━━━━━━━━━━━━━━━━\n• Sezon: ${anime.season ?? 'N/A'}\n• Ongoin\n• Qism : ${anime.episode_count ?? 'N/A'}\n• Sifat : 1080 p\n╰━━━━━━━━━━━━━━━━━━━━━━━━━\n\n‣ Kanal: @animedia_fandub`,
                     reply_markup: {
-                        inline_keyboard: [[{
-                            text: '🎬 Videoni ko‘rish',
-                            url: `https://t.me/${BOT_USERNAME}?start=${a._id.toString()}`
-                        }]]
+                        inline_keyboard: [
+                            [
+                                {
+                                    text: '🎬 Videoni ko‘rish',
+                                    // Buni bosganda botga `start` buyrug'i bilan ID yuboriladi
+                                    // Bu esa sendFormattedAnime funksiyasini ishga tushiradi
+                                    url: `https://t.me/${BOT_USERNAME}?start=${anime._id.toString()}`
+                                }
+                            ]
+                        ]
                     }
                 };
             });
             
-        await bot.answerInlineQuery(iq.id, results, { cache_time: INLINE_CACHE_SECONDS });
+        // Tayyor natijalarni foydalanuvchiga yuboramiz
+        await bot.answerInlineQuery(iq.id, results, { 
+            cache_time: INLINE_CACHE_SECONDS
+        });
 
     } catch (e) { 
-        console.error('inline_query xatosi:', e); 
+        console.error('inline_query xatosi:', e);
+        // Xatolik yuz bersa, bo'sh javob qaytaramiz
+        await bot.answerInlineQuery(iq.id, [], { cache_time: 0 }).catch(() => {});
     }
 });
+
+// ======================================================================
+// =================== INLINE QIDIRUV BLOKI TUGADI ======================
+// ======================================================================
 
 
 async function handleAddAnime(msg) {
@@ -344,9 +362,13 @@ async function handleListAnimes(msg) {
     if (!ADMIN_IDS.includes(msg.from.id)) return;
     const rows = await listAllAnimes();
     if (!rows.length) return bot.sendMessage(msg.chat.id, 'Saqlangan animelar yo‘q.', { protect_content: true });
-    const text = rows.map(a => `🆔 ${a._id.toString()}\n— ${a.name}`).join('\n\n');
+    
+    let text = "📜 Barcha animelar ro'yxati:\n\n";
+    text += rows.map(a => `🆔: \`${a._id.toString()}\`\n📝 Nomi: ${a.name}`).join('\n\n');
+
+    // Telegramda bitta xabar 4096 belgidan oshmasligi kerak
     for (let i = 0; i < text.length; i += 4096) {
-        await bot.sendMessage(msg.chat.id, text.substring(i, i + 4096), { protect_content: true });
+        await bot.sendMessage(msg.chat.id, text.substring(i, i + 4096), { parse_mode: 'Markdown', protect_content: true });
     }
 }
 
