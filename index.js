@@ -2,7 +2,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import express from 'express';
 import process from 'process';
-import { MongoClient, ObjectId } from 'mongodb'; // ObjectId ni import qilamiz
+import { MongoClient, ObjectId } from 'mongodb';
 
 // ------------------ KONFIGURATSIYA ------------------
 const token = process.env.BOT_TOKEN;
@@ -45,21 +45,21 @@ async function loadAdminsFromDB() {
     } catch (e) { console.error("Adminlarni MongoDB'dan yuklashda xato:", e); }
 }
 
-async function setupFirstAdmin(msg) {
-    if (ADMIN_IDS.length > 0) return false;
-    const fromId = msg.from.id;
-    ADMIN_IDS.push(fromId);
-    try {
-        await configCol.updateOne({ _id: 'bot_config' }, { $set: { admin_ids: ADMIN_IDS } }, { upsert: true });
-        console.log(`🎉 BIRINCHI ADMIN TAYINLANDI! ID: ${fromId}.`);
-        await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`).catch(()=>{});
-        return true;
-    } catch (e) {
-        console.error("Birinchi adminni MongoDB'ga saqlashda xato:", e);
-        ADMIN_IDS = [];
-        return false;
-    }
-}
+// async function setupFirstAdmin(msg) {
+//     if (ADMIN_IDS.length > 0) return false;
+//     const fromId = msg.from.id;
+//     ADMIN_IDS.push(fromId);
+//     try {
+//         await configCol.updateOne({ _id: 'bot_config' }, { $set: { admin_ids: ADMIN_IDS } }, { upsert: true });
+//         console.log(`🎉 BIRINCHI ADMIN TAYINLANDI! ID: ${fromId}.`);
+//         await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`).catch(()=>{});
+//         return true;
+//     } catch (e) {
+//         console.error("Birinchi adminni MongoDB'ga saqlashda xato:", e);
+//         ADMIN_IDS = [];
+//         return false;
+//     }
+// }
 // ======================================================================
 // =================== ADMIN TAYINLASH BLOKI TUGADI =====================
 // ======================================================================
@@ -86,11 +86,10 @@ async function initMongo() {
   }
 }
 
-// YANGILANGAN: Endi counters ishlatilmaydi
 async function insertAnimeToDB(animeObj) {
   const doc = { ...animeObj, created_at: new Date() };
   const result = await animesCol.insertOne(doc);
-  return result.insertedId; // MongoDB'ning unikal _id sini qaytaramiz
+  return result.insertedId;
 }
 
 async function findAnimesByQuery(q, limit = 10) {
@@ -100,13 +99,9 @@ async function findAnimesByQuery(q, limit = 10) {
 }
 async function listAllAnimes() { return await animesCol.find().sort({ created_at: -1 }).toArray(); }
 
-// YANGILANGAN: ID string formatda keladi va ObjectId ga o'giriladi
 async function getAnimeById(idString) {
   try {
-    if (!ObjectId.isValid(idString)) {
-      console.log(`Yaroqsiz ID formati: ${idString}`);
-      return null;
-    }
+    if (!ObjectId.isValid(idString)) return null;
     return await animesCol.findOne({ _id: new ObjectId(idString) });
   } catch (error) {
     console.error("getAnimeById xatosi:", error);
@@ -157,10 +152,11 @@ bot.on('error', (err) => console.error('Botda umumiy xato:', err));
 // YANGILANGAN /start buyrug'i (deep linking uchun)
 bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
-    const deepLinkPayload = match[1]; // url dagi ID ni ushlab oladi
+    const deepLinkPayload = match[1];
 
     if (deepLinkPayload) {
-        return await sendAnimeById(chatId, deepLinkPayload);
+        // Agar /start buyrug'i ID bilan kelsa, yangi funksiyani chaqiramiz
+        return await sendFormattedAnime(chatId, deepLinkPayload);
     }
 
     // Agar ID bo'lmasa, oddiy /start logikasi ishlaydi
@@ -173,6 +169,63 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
         await bot.sendMessage(chatId, `Salom! Anime qidirish uchun chatda shunday yozing: @${BOT_USERNAME || 'bot_nomi'} anime_nomi`);
     }
 });
+
+
+// ======================================================================
+// ========= YANGI FUNKSIYA: FORMATLANGAN ANIME YUBORISH ==============
+// ======================================================================
+/**
+ * Foydalanuvchiga animeni chiroyli formatda (rasm+matn) va ketidan videoni yuboradi.
+ * @param {number} chatId Foydalanuvchi chat IDsi
+ * @param {string} animeId Animeninng MongoDB dagi _id si
+ */
+async function sendFormattedAnime(chatId, animeId) {
+    await bot.sendMessage(chatId, "⏳ So'rovingiz qabul qilindi, anime qidirilmoqda...");
+    const anime = await getAnimeById(animeId);
+
+    if (!anime) {
+        return bot.sendMessage(chatId, "❌ Afsus, bu ID bo'yicha anime topilmadi yoki ID yaroqsiz.");
+    }
+
+    // 1. Chiroyli matnni (caption) tayyorlash
+    const caption = `• Anime: ${anime.name}
+╭━━━━━━━━━━━━━━━━━━━━━━━━━
+• Sezon: ${anime.season ?? 'N/A'}
+• Ongoin
+• Qism : ${anime.episode_count ?? 'N/A'}
+• Sifat : 1080 p
+╰━━━━━━━━━━━━━━━━━━━━━━━━━
+
+‣ Kanal: @animedia_fandub`;
+
+    // 2. Rasmni shu matn bilan yuborish
+    try {
+        if (anime.poster_id) {
+            await bot.sendPhoto(chatId, anime.poster_id, { caption: caption });
+        } else {
+            // Agar rasm bo'lmasa, matnning o'zini yuboramiz
+            await bot.sendMessage(chatId, caption);
+        }
+    } catch (e) {
+        console.error(`Rasm yuborishda xato (ID: ${animeId}):`, e.response?.body?.description || e.message);
+        await bot.sendMessage(chatId, "Rasm faylini yuborishda xatolik yuz berdi. Lekin video hozir yuboriladi.");
+    }
+
+    // 3. Videoni alohida yuborish
+    try {
+        if (anime.video_id) {
+            await bot.sendVideo(chatId, anime.video_id, { supports_streaming: true });
+        } else {
+            await bot.sendMessage(chatId, `"${anime.name}" uchun video fayl topilmadi.`);
+        }
+    } catch (e) {
+        console.error(`Video yuborishda xato (ID: ${animeId}):`, e.response?.body?.description || e.message);
+        await bot.sendMessage(chatId, "Video faylini yuborishda xatolik yuz berdi. Adminga xabar bering.");
+    }
+}
+// ======================================================================
+// ======================================================================
+
 
 bot.on('message', async (msg) => {
     if (msg.date < BOT_START_TIME) return;
@@ -188,36 +241,8 @@ bot.on('message', async (msg) => {
     }
 });
 
-// YANGI FUNKSIYA: ID bo'yicha anime yuborish
-async function sendAnimeById(chatId, animeId) {
-    await bot.sendMessage(chatId, "⏳ So'rovingiz qabul qilindi, anime qidirilmoqda...");
-    const anime = await getAnimeById(animeId);
-
-    if (!anime) {
-        return bot.sendMessage(chatId, "❌ Afsus, bu ID bo'yicha anime topilmadi yoki ID yaroqsiz.");
-    }
-
-    try {
-        const caption = [
-            `📺 ${anime.name}`,
-            `🎞️ Qism: ${anime.episode_count ?? 'N/A'}`,
-            `📆 Fasl: ${anime.season ?? 'N/A'}`
-        ].join('\n');
-        
-        if (anime.video_id) {
-            await bot.sendVideo(chatId, anime.video_id, { caption, supports_streaming: true });
-        } else {
-            await bot.sendMessage(chatId, `"${anime.name}" uchun video topilmadi, lekin ma'lumotlar mavjud:\n${caption}`);
-        }
-    } catch (e) {
-        console.error(`sendAnimeById xatosi (ID: ${animeId}):`, e);
-        await bot.sendMessage(chatId, "Media faylni yuborishda xato yuz berdi. Bu haqida adminga xabar bering.");
-    }
-}
-
-
 async function handleSessionMessage(msg, session) {
-    // ... (bu funksiya o'zgarishsiz qoladi)
+    // Bu funksiya o'zgarishsiz qoladi
     const chatId = msg.chat.id;
     try {
         switch (session.step) {
@@ -250,7 +275,6 @@ async function handleSessionMessage(msg, session) {
     }
 }
 
-// YANGILANGAN: 'view_' callback endi ishlatilmaydi
 bot.on('callback_query', async (query) => {
     if (query.message?.date < BOT_START_TIME) return;
     const { data, from, message } = query;
@@ -276,21 +300,18 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-// YANGILANGAN: Tugma endi URL bo'ladi
 bot.on('inline_query', async (iq) => {
     try {
         const matches = await findAnimesByQuery(iq.query.trim());
         const results = matches.map(a => ({
             type: 'article',
-            id: a._id.toString(), // Har bir natija uchun unikal ID
+            id: a._id.toString(),
             title: a.name,
-            input_message_content: {
-                message_text: `"${a.name}" animesini ochish uchun quyidagi "Ko'rish" tugmasini bosing.`
-            },
+            input_message_content: { message_text: `⏳ "${a.name}" animesini tayyorlash... \n\nIltimos, quyidagi "Ko'rish" tugmasini bosing.` },
             reply_markup: {
                 inline_keyboard: [[{
                     text: '🎬 Ko‘rish',
-                    url: `https://t.me/${BOT_USERNAME}?start=${a._id.toString()}` // DEEP LINK
+                    url: `https://t.me/${BOT_USERNAME}?start=${a._id.toString()}`
                 }]]
             },
             description: `Qism: ${a.episode_count}, Fasl: ${a.season ?? '—'}`
@@ -298,7 +319,6 @@ bot.on('inline_query', async (iq) => {
         await bot.answerInlineQuery(iq.id, results, { cache_time: INLINE_CACHE_SECONDS, is_personal: true });
     } catch (e) { console.error('inline_query xatosi:', e); }
 });
-
 
 async function handleAddAnime(msg) {
     if (!ADMIN_IDS.includes(msg.from.id)) return;
@@ -310,7 +330,6 @@ async function handleListAnimes(msg) {
     if (!ADMIN_IDS.includes(msg.from.id)) return;
     const rows = await listAllAnimes();
     if (!rows.length) return bot.sendMessage(msg.chat.id, 'Saqlangan animelar yo‘q.');
-    // YANGILANGAN: endi `_id` ko'rsatiladi
     const text = rows.map(a => `🆔 ${a._id.toString()}\n— ${a.name}`).join('\n\n');
     for (let i = 0; i < text.length; i += 4096) {
         await bot.sendMessage(msg.chat.id, text.substring(i, i + 4096));
