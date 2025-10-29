@@ -350,5 +350,5 @@ bot.onText(/\/listanimes/, handleListAnimes);
 // ---------- Init ----------
 (async () => {
     await initMongo();
-    console.log('Bot to`liq ishga tushdi ✅');
+    console.log('Bot to`liq ishga tushdi ✅ 1111');
 })();
