@@ -1,7 +1,7 @@
 {
-  "name": "telegram-anime-bot-mongo",
+  "name": "telegram-anime-bot-stable",
   "version": "1.0.0",
-  "description": "Telegram bot for managing anime using MongoDB",
+  "description": "A stable version of the Telegram bot for managing anime.",
   "main": "index.js",
   "type": "module",
   "scripts": {
