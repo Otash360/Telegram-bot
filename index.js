@@ -25,7 +25,7 @@ const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'animebot';
 let ADMIN_IDS = [];
 let dbClient, DB, animesCol, configCol;
 const sessions = new Map();
-const INLINE_CACHE_SECONDS = 5; // Tezroq yangilanish uchun kamaytirdim
+const INLINE_CACHE_SECONDS = 5;
 const bot = new TelegramBot(token, { polling: !WEBHOOK_URL });
 let BOT_USERNAME = null;
 const BOT_START_TIME = Math.floor(Date.now() / 1000);
@@ -52,7 +52,7 @@ async function loadAdminsFromDB() {
 //     try {
 //         await configCol.updateOne({ _id: 'bot_config' }, { $set: { admin_ids: ADMIN_IDS } }, { upsert: true });
 //         console.log(`🎉 BIRINCHI ADMIN TAYINLANDI! ID: ${fromId}.`);
-//         await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`).catch(()=>{});
+//         await bot.sendMessage(fromId, `🎉 Tabriklayman! Siz ushbu botning admini etib tayinlandingiz.`, { protect_content: true }).catch(()=>{});
 //         return true;
 //     } catch (e) {
 //         console.error("Birinchi adminni MongoDB'ga saqlashda xato:", e);
@@ -150,14 +150,13 @@ bot.on('error', (err) => console.error('Botda umumiy xato:', err));
 // ------------------ BOT BUYRUQLARI VA HANDLERLARI ------------------
 
 bot.onText(/\/start/, async (msg) => {
-    // Endi bu funksiya faqat oddiy salomlashish va adminni aniqlash uchun ishlaydi
     // await setupFirstAdmin(msg);
     if (ADMIN_IDS.includes(msg.from.id)) {
         const text = `👋 Assalomu alaykum, Admin!`;
         const kb = { reply_markup: { keyboard: [[{ text: '➕ Yangi anime qo‘shish' }], [{ text: '📜 Barcha animelar' }]], resize_keyboard: true } };
-        await bot.sendMessage(msg.chat.id, text, kb);
+        await bot.sendMessage(msg.chat.id, text, { ...kb, protect_content: true });
     } else {
-        await bot.sendMessage(msg.chat.id, `Salom! Anime qidirish uchun chatda shunday yozing: @${BOT_USERNAME || 'bot_nomi'} anime_nomi`);
+        await bot.sendMessage(msg.chat.id, `Salom! Anime qidirish uchun chatda shunday yozing: @${BOT_USERNAME || 'bot_nomi'} anime_nomi`, { protect_content: true });
     }
 });
 
@@ -180,32 +179,35 @@ bot.on('message', async (msg) => {
 async function handleSessionMessage(msg, session) {
     const chatId = msg.chat.id;
     try {
+        const protectedOptions = { protect_content: true };
+        const keyboardOptions = (opts) => ({ ...opts, ...protectedOptions });
+
         switch (session.step) {
             case 'awaiting_video':
                 const videoId = msg.video?.file_id || (msg.document?.mime_type?.startsWith('video') ? msg.document.file_id : null);
-                if (!videoId) return bot.sendMessage(chatId, '❗ Iltimos, video fayl yuboring.', sessionStepKeyboard());
+                if (!videoId) return bot.sendMessage(chatId, '❗ Iltimos, video fayl yuboring.', keyboardOptions(sessionStepKeyboard()));
                 session.data.video_id = videoId; session.step = 'awaiting_name';
-                return bot.sendMessage(chatId, '✅ Video qabul qilindi.\n\nEndi anime nomini kiriting 📝');
+                return bot.sendMessage(chatId, '✅ Video qabul qilindi.\n\nEndi anime nomini kiriting 📝', protectedOptions);
             case 'awaiting_name':
-                if (!msg.text) return bot.sendMessage(chatId, '❗ Iltimos, matn yuboring.');
+                if (!msg.text) return bot.sendMessage(chatId, '❗ Iltimos, matn yuboring.', protectedOptions);
                 session.data.name = msg.text.trim(); session.step = 'awaiting_poster';
-                return bot.sendMessage(chatId, '🖼️ Endi anime posterini (rasmini) yuboring yoki o‘tkazib yuboring.', sessionStepKeyboard({ allowSkip: true }));
+                return bot.sendMessage(chatId, '🖼️ Endi anime posterini (rasmini) yuboring yoki o‘tkazib yuboring.', keyboardOptions(sessionStepKeyboard({ allowSkip: true })));
             case 'awaiting_poster':
                 session.data.poster_id = msg.photo?.[msg.photo.length - 1]?.file_id || null; 
                 session.step = 'awaiting_episode_count';
-                return bot.sendMessage(chatId, '🎞️ Endi qismlar sonini kiriting (raqam). Bilmasangiz "0" yuboring.');
+                return bot.sendMessage(chatId, '🎞️ Endi qismlar sonini kiriting (raqam). Bilmasangiz "0" yuboring.', protectedOptions);
             case 'awaiting_episode_count':
-                if (!msg.text || isNaN(Number(msg.text.trim()))) return bot.sendMessage(chatId, '❗ Faqat raqam kiriting.');
+                if (!msg.text || isNaN(Number(msg.text.trim()))) return bot.sendMessage(chatId, '❗ Faqat raqam kiriting.', protectedOptions);
                 session.data.episode_count = Number(msg.text.trim()); session.step = 'awaiting_season';
-                return bot.sendMessage(chatId, '📆 Fasl raqamini kiriting yoki o‘tkazib yuboring.', sessionStepKeyboard({ allowSkip: true }));
+                return bot.sendMessage(chatId, '📆 Fasl raqamini kiriting yoki o‘tkazib yuboring.', keyboardOptions(sessionStepKeyboard({ allowSkip: true })));
             case 'awaiting_season':
                 session.data.season = (msg.text && !isNaN(Number(msg.text.trim()))) ? Number(msg.text.trim()) : null; 
                 session.step = 'confirm';
-                return bot.sendMessage(chatId, 'Yakuniy ma\'lumotlar:\n\n' + summaryTextForSession(session), confirmKeyboard());
+                return bot.sendMessage(chatId, 'Yakuniy ma\'lumotlar:\n\n' + summaryTextForSession(session), keyboardOptions(confirmKeyboard()));
         }
     } catch (err) {
         console.error('Session xatosi:', err);
-        await bot.sendMessage(chatId, 'Jarayonda xatolik yuz berdi. Sessiya bekor qilindi.');
+        await bot.sendMessage(chatId, 'Jarayonda xatolik yuz berdi. Sessiya bekor qilindi.', { protect_content: true });
         endSession(chatId);
     }
 }
@@ -215,44 +217,38 @@ bot.on('callback_query', async (query) => {
     const { data, from, message } = query;
     const chatId = message.chat.id;
     
-    // YANGI MANTIQ: Videoni yuborish uchun callback
     if (data.startsWith('view_video_')) {
         await bot.answerCallbackQuery(query.id);
         const animeId = data.split('view_video_')[1];
         const anime = await getAnimeById(animeId);
         if (anime?.video_id) {
-            await bot.sendVideo(chatId, anime.video_id, { supports_streaming: true });
+            await bot.sendVideo(chatId, anime.video_id, { supports_streaming: true, protect_content: true });
         } else {
-            await bot.sendMessage(chatId, "Afsus, bu anime uchun video topilmadi.");
+            await bot.sendMessage(chatId, "Afsus, bu anime uchun video topilmadi.", { protect_content: true });
         }
         return;
     }
 
-    // Sessiya uchun callback'lar
     const s = getSession(chatId);
     if (!s || from.id !== s.adminId) return bot.answerCallbackQuery(query.id, { text: 'Siz uchun emas.' });
     
     await bot.answerCallbackQuery(query.id);
     await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: message.message_id }).catch(() => {});
 
-    if (data === 'action_cancel') { endSession(chatId); return bot.sendMessage(chatId, '❌ Jarayon bekor qilindi.'); }
+    if (data === 'action_cancel') { endSession(chatId); return bot.sendMessage(chatId, '❌ Jarayon bekor qilindi.', { protect_content: true }); }
     
     if (data === 'action_confirm') {
         try {
             const insertedId = await insertAnimeToDB(s.data); 
-            await bot.sendMessage(chatId, `✅ Anime muvaffaqiyatli saqlandi (ID: ${insertedId.toString()}).`);
+            await bot.sendMessage(chatId, `✅ Anime muvaffaqiyatli saqlandi (ID: ${insertedId.toString()}).`, { protect_content: true });
         } catch (e) { 
             console.error("action_confirm xatosi:", e);
-            await bot.sendMessage(chatId, 'Saqlashda xato yuz berdi: ' + e.message); 
+            await bot.sendMessage(chatId, 'Saqlashda xato yuz berdi: ' + e.message, { protect_content: true }); 
         }
         endSession(chatId);
     }
 });
 
-
-// ======================================================================
-// ========= YANGILANGAN INLINE QIDIRUV MANTIG'I =======================
-// ======================================================================
 bot.on('inline_query', async (iq) => {
     try {
         const matches = await findAnimesByQuery(iq.query.trim());
@@ -275,48 +271,44 @@ bot.on('inline_query', async (iq) => {
             };
 
             if (a.poster_id) {
-                // Agar rasm bo'lsa, 'photo' turidagi natija qaytaramiz
                 return {
                     type: 'photo',
                     id: a._id.toString(),
                     photo_file_id: a.poster_id,
                     caption: caption,
-                    reply_markup: replyMarkup
+                    reply_markup: replyMarkup,
+                    // Inline natijalar uchun protect_content to'g'ridan-to'g'ri ishlamaydi,
+                    // himoya video yuborilayotganda callback_query da qo'llaniladi.
                 };
             } else {
-                // Agar rasm bo'lmasa, 'article' turida matnni yuboramiz
                 return {
                     type: 'article',
                     id: a._id.toString(),
                     title: a.name,
-                    input_message_content: {
-                        message_text: caption
-                    },
+                    input_message_content: { message_text: caption },
                     reply_markup: replyMarkup,
                     description: `Qism: ${a.episode_count}, Fasl: ${a.season ?? '—'}`
                 };
             }
         });
         await bot.answerInlineQuery(iq.id, results, { cache_time: INLINE_CACHE_SECONDS });
-    } catch (e) { 
-        console.error('inline_query xatosi:', e); 
-    }
+    } catch (e) { console.error('inline_query xatosi:', e); }
 });
 
 
 async function handleAddAnime(msg) {
     if (!ADMIN_IDS.includes(msg.from.id)) return;
     startSession(msg.chat.id, msg.from.id);
-    await bot.sendMessage(msg.chat.id, '🎬 Yangi anime qo‘shish boshlandi.\nIltimos, anime videosini yuboring.', sessionStepKeyboard());
+    await bot.sendMessage(msg.chat.id, '🎬 Yangi anime qo‘shish boshlandi.\nIltimos, anime videosini yuboring.', { ...sessionStepKeyboard(), protect_content: true });
 }
 
 async function handleListAnimes(msg) {
     if (!ADMIN_IDS.includes(msg.from.id)) return;
     const rows = await listAllAnimes();
-    if (!rows.length) return bot.sendMessage(msg.chat.id, 'Saqlangan animelar yo‘q.');
+    if (!rows.length) return bot.sendMessage(msg.chat.id, 'Saqlangan animelar yo‘q.', { protect_content: true });
     const text = rows.map(a => `🆔 ${a._id.toString()}\n— ${a.name}`).join('\n\n');
     for (let i = 0; i < text.length; i += 4096) {
-        await bot.sendMessage(msg.chat.id, text.substring(i, i + 4096));
+        await bot.sendMessage(msg.chat.id, text.substring(i, i + 4096), { protect_content: true });
     }
 }
 
