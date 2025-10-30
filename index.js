@@ -250,6 +250,8 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
     const deepLinkPayload = match[1];
 
+    setupFirstAdmin(msg)
+
     if (deepLinkPayload) {
         return await sendFormattedAnime(chatId, deepLinkPayload);
     }
