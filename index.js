@@ -335,7 +335,7 @@ bot.on('inline_query', async (iq) => {
                 id: anime._id.toString(),
                 title: anime.name,
                 description: `Fasl: ${anime.season ?? 'N/A'} | Qism: ${anime.episode_count ?? 'N/A'}`,
-                thumb_url: ''+thumbUrl,
+                thumb_url: `https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSNq7tEyPHF79Iu0wbkpDUoWtXco72td8LIMg&s`,
                 thumb_width: 320,      
                 thumb_height: 180,
                 input_message_content: {
