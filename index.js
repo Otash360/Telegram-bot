@@ -3,6 +3,8 @@ import TelegramBot from 'node-telegram-bot-api';
 import express from 'express';
 import process from 'process';
 import { MongoClient, ObjectId } from 'mongodb';
+import axios from 'axios';
+import path from 'path';
 
 // ------------------ KONFIGURATSIYA ------------------
 const token = process.env.BOT_TOKEN;
@@ -12,7 +14,11 @@ if (!token) {
 }
 
 const PORT = process.env.PORT || 3000;
-const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL ? `${process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '')}/webhook/${token}` : null;
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || null;
+const BASE_URL = process.env.BASE_URL
+    || (RENDER_EXTERNAL_URL ? RENDER_EXTERNAL_URL.replace(/\/$/, '') : `http://localhost:${PORT}`);
+
+const WEBHOOK_URL = RENDER_EXTERNAL_URL ? `${RENDER_EXTERNAL_URL.replace(/\/$/, '')}/webhook/${token}` : null;
 
 const MONGO_URI = process.env.MONGO_URI;
 if (!MONGO_URI) {
@@ -31,7 +37,7 @@ let BOT_USERNAME = null;
 const BOT_START_TIME = Math.floor(Date.now() / 1000);
 
 // ======================================================================
-// ========= BIR MARTALIK ADMIN TAYINLASH FUNKSIYALARI ==================
+// =============== MONGO, ADMIN VA YORDAMCHI FUNKSIYALAR =================
 // ======================================================================
 async function loadAdminsFromDB() {
     try {
@@ -60,11 +66,7 @@ async function setupFirstAdmin(msg) {
         return false;
     }
 }
-// ======================================================================
-// =================== ADMIN TAYINLASH BLOKI TUGADI =====================
-// ======================================================================
 
-// ------------------ MONGO DB VA YORDAMCHI FUNKSIYALAR ------------------
 async function initMongo() {
     try {
         console.log('MongoDB ga ulanilmoqda...');
@@ -109,25 +111,16 @@ async function getAnimeById(idString) {
     }
 }
 
-/**
- * file_id dan vaqtinchalik (1 soatlik) URL generatsiya qiladi.
- * Bu funksiya siz topgan ma'lumot asosida ishlaydi.
- */
+// ------------------ PROXY-ASSISTED getFileUrl ------------------
+// Bu funksiya file_id ni sizning serverdagi /thumb endpointiga yo'naltirilgan URL ga aylantiradi.
+// thumb_url sifatida shu URL ni yuborasiz (type: 'article' saqlanadi).
 async function getFileUrl(fileId) {
     if (!fileId) return null;
-    try {
-        const file = await bot.getFile(fileId);
-        if (!file || !file.file_path) return null;
-        return `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-    } catch (error) {
-        console.warn(`file_id dan URL olib bo'lmadi: ${fileId} -> ${error.message}`);
-        return null;
-    }
+    // Bu URL clients (Telegram/telefon) tomonidan ochilishi uchun public bo'lishi kerak.
+    return `${BASE_URL.replace(/\/$/, '')}/thumb?file_id=${encodeURIComponent(fileId)}`;
 }
 
-
-
-// ------------------ SESSIYA YORDAMCHILARI (o'zgarishsiz) ------------------
+// ------------------ SESSIYA YORDAMCHILARI ------------------
 function startSession(chatId, adminId) {
     const s = { adminId, step: 'awaiting_video', data: { name: null, season: null, episode_count: null, video_id: null, poster_id: null } };
     sessions.set(String(chatId), s);
@@ -146,27 +139,113 @@ function confirmKeyboard() {
     return { reply_markup: { inline_keyboard: [[{ text: '✅ Tasdiqlash', callback_data: 'action_confirm' }, { text: '❌ Bekor qilish', callback_data: 'action_cancel' }]] } };
 }
 
-// ------------------ SERVER VA WEBHOOK ------------------
+// ------------------ EXPRESS SERVER (proxy + webhook handler) ------------------
+const app = express();
+app.use(express.json());
+
+// Oddiy abuse throttling uchun juda soddalashtirilgan map
+const recentRequests = new Map();
+function tooManyRequests(key, ms = 200) {
+    const now = Date.now();
+    const last = recentRequests.get(key) || 0;
+    if (now - last < ms) return true;
+    recentRequests.set(key, now);
+    return false;
+}
+
+// /thumb endpoint: file_id dan Telegram faylga so'rov yuboradi va streaming orqali clientga yuboradi.
+// Diskga hech qachon yozmaydi. Javobdagi Content-Disposition olib tashlanadi.
+app.get('/thumb', async (req, res) => {
+    try {
+        const fileId = req.query.file_id;
+        if (!fileId) return res.status(400).send('file_id required');
+
+        if (tooManyRequests(req.ip, 150)) return res.status(429).send('Too many requests');
+
+        // 1) getFile orqali file_path oling
+        const file = await bot.getFile(fileId).catch(err => { throw new Error('getFile failed: ' + err.message); });
+        if (!file || !file.file_path) throw new Error('No file_path received from Telegram');
+
+        // 2) t.me API orqali stream olish
+        const tgFileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+
+        const tgResp = await axios.get(tgFileUrl, { responseType: 'stream', validateStatus: null });
+
+        if (tgResp.status !== 200) {
+            // Telegram 200 qaytarmasa xatolikni proxy orqali bildiring
+            res.status(502).send('Telegram file fetch failed: ' + tgResp.status);
+            tgResp.data && tgResp.data.destroy();
+            return;
+        }
+
+        // 3) content-type ni aniqlash va rasm ekanligini tekshirish
+        let contentType = tgResp.headers['content-type'] || '';
+        const ext = path.extname(file.file_path || '').toLowerCase();
+
+        // Agar Telegram image bo'lmagan content-type yuborsa yoki unknown bo'lsa, ext asosida aniqlashga harakat qiling
+        if (!/^image\//i.test(contentType)) {
+            if (/\.(jpg|jpeg|png|webp|gif)$/i.test(ext)) {
+                const extMap = {
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.png': 'image/png',
+                    '.webp': 'image/webp',
+                    '.gif': 'image/gif'
+                };
+                contentType = extMap[ext] || 'image/jpeg';
+            } else {
+                // Agar image emas deb taxmin qilinsa, ruxsat bermaymiz
+                // (Siz istasangiz bu yerda konvertatsiya yoki boshqa chora qo'yishingiz mumkin)
+                tgResp.data.destroy();
+                return res.status(415).send('Not an image');
+            }
+        }
+
+        // 4) Clientga qaytariladigan sarlavhalar (Content-Disposition olib tashlanadi)
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 kun cache
+        // Do NOT set Content-Disposition so browsers/clients will try to render inline
+
+        // 5) Streamni yo'naltirish (pipe)
+        tgResp.data.pipe(res);
+
+        tgResp.data.on('error', (err) => {
+            console.warn('tg stream error', err);
+            try { res.destroy(err); } catch (e) { /* ignore */ }
+        });
+
+    } catch (err) {
+        console.error('thumb proxy error:', err.message || err);
+        if (!res.headersSent) res.status(500).send('Proxy error');
+    }
+});
+
+// Webhook konfiguratsiyasi: agar WEBHOOK_URL bo'lsa webhook o'rnatilib app.post handler ishlaydi.
+// Aks holda polling rejimida ham bu server proxy endpointni taqdim qiladi.
 if (WEBHOOK_URL) {
-    const app = express(); app.use(express.json());
     bot.setWebHook(WEBHOOK_URL).then(() => console.log('Webhook o\'rnatildi:', WEBHOOK_URL)).catch(err => console.error('Webhook xatosi:', err));
     app.post(`/webhook/${token}`, (req, res) => {
-        if (req.body?.message?.date < BOT_START_TIME) return res.sendStatus(200);
-        bot.processUpdate(req.body);
-        res.sendStatus(200);
+        try {
+            if (req.body?.message?.date < BOT_START_TIME) return res.sendStatus(200);
+            bot.processUpdate(req.body);
+            res.sendStatus(200);
+        } catch (e) {
+            console.error('webhook processUpdate xatosi:', e);
+            res.sendStatus(500);
+        }
     });
-    app.get('/', (req, res) => res.send('Bot ishlayapti ✅'));
-    app.listen(PORT, () => console.log(`Server ${PORT}-portda ishlamoqda`));
-} else { console.log('Polling rejimida ishga tushirildi.'); }
+}
 
-// ------------------ BOTNI ISHGA TUSHIRISH VA XATOLIKLARNI USHLASH ------------------
+app.get('/', (req, res) => res.send('Bot ishlayapti ✅'));
+
+// ------------------ BOT ISHGA TUSHISH VA XATOLARNI USHLASH ------------------
 bot.getMe().then(me => { BOT_USERNAME = me.username; console.log('Bot username:', BOT_USERNAME); }).catch(e => console.warn('Bot ma\'lumotlarini olib bo\'lmadi.'));
+
 process.on('uncaughtException', (err, origin) => console.error(`Xavfli xato: ${origin}`, err));
 process.on('unhandledRejection', (reason) => console.error('Tutilmagan promise xatosi:', reason));
 bot.on('error', (err) => console.error('Botda umumiy xato:', err));
 
-// ------------------ BOT BUYRUQLARI VA HANDLERLARI ------------------
-
+// ------------------ BOT BUYRUQLARI VA HANDLERLARI (asal kodi sizniki bilan mos) ------------------
 bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
     const deepLinkPayload = match[1];
@@ -174,8 +253,6 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     if (deepLinkPayload) {
         return await sendFormattedAnime(chatId, deepLinkPayload);
     }
-
-    // await setupFirstAdmin(msg);
 
     if (ADMIN_IDS.includes(msg.from.id)) {
         const text = `👋 Assalomu alaykum, Admin!`;
@@ -303,23 +380,18 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-
 // ======================================================================
-// ========= YANGILANGAN INLINE QIDIRUV MANTIG'I =======================
+// =================== YANGILANGAN INLINE QIDIRUV MANTIG'I ==============
 // ======================================================================
 bot.on('inline_query', async (iq) => {
     try {
         const query = iq.query.trim();
         const matches = await findAnimesByQuery(query, 20);
 
-        // Natijalarni tayyorlash uchun asinxron map dan foydalanamiz
         const resultsPromises = matches.map(async (anime) => {
-
-            // `thumb_url` uchun vaqtinchalik URL olamiz
+            // getFileUrl endi proxy-based URL qaytaradi
             const thumbUrl = await getFileUrl(anime.poster_id);
-            console.log(thumbUrl);
             
-            // Foydalanuvchi natijani bosganda chatga yuboriladigan matn
             const messageText = `• Anime: ${anime.name}
 ╭━━━━━━━━━━━━━━━━━━━━━━━━━
 • Sezon: ${anime.season ?? 'N/A'}
@@ -335,8 +407,8 @@ bot.on('inline_query', async (iq) => {
                 id: anime._id.toString(),
                 title: anime.name,
                 description: `Fasl: ${anime.season ?? 'N/A'} | Qism: ${anime.episode_count ?? 'N/A'}`,
-                thumb_url: `https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSNq7tEyPHF79Iu0wbkpDUoWtXco72td8LIMg&s`,
-                thumb_width: 320,      
+                thumb_url: thumbUrl,
+                thumb_width: 320,
                 thumb_height: 180,
                 input_message_content: {
                     message_text: messageText
@@ -357,11 +429,9 @@ bot.on('inline_query', async (iq) => {
 
     } catch (e) {
         console.error('inline_query xatosi:', e);
-        // Xatolik yuzaga kelsa, foydalanuvchiga bo'sh javob yuborish
         await bot.answerInlineQuery(iq.id, []).catch(() => { });
     }
 });
-
 
 async function handleAddAnime(msg) {
     if (!ADMIN_IDS.includes(msg.from.id)) return;
@@ -379,8 +449,9 @@ async function handleListAnimes(msg) {
     }
 }
 
-// ------------------ BOTNI ASOSIY ISHGA TUSHIRISH ------------------
+// ------------------ ASOSIY ISHGA TUSHIRISH ------------------
 (async () => {
     await initMongo();
+    app.listen(PORT, () => console.log(`Server ${PORT}-portda ishlamoqda. BASE_URL=${BASE_URL}`));
     console.log('Bot to`liq ishga tushdi va buyruqlarni qabul qilishga tayyor.');
 })();
