@@ -117,7 +117,6 @@ async function getFileUrl(fileId) {
     if (!fileId) return null;
     try {
         const file = await bot.getFile(fileId);
-        console.log(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
         if (!file || !file.file_path) return null;
         return `https://api.telegram.org/file/bot${token}/${file.file_path}`;
     } catch (error) {
@@ -318,7 +317,8 @@ bot.on('inline_query', async (iq) => {
 
             // `thumb_url` uchun vaqtinchalik URL olamiz
             const thumbUrl = await getFileUrl(anime.poster_id);
-
+            console.log(thumbUrl);
+            
             // Foydalanuvchi natijani bosganda chatga yuboriladigan matn
             const messageText = `• Anime: ${anime.name}
 ╭━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -335,7 +335,7 @@ bot.on('inline_query', async (iq) => {
                 id: anime._id.toString(),
                 title: anime.name,
                 description: `Fasl: ${anime.season ?? 'N/A'} | Qism: ${anime.episode_count ?? 'N/A'}`,
-                thumb_url: thumbUrl,
+                thumb_url: ''+thumbUrl,
                 thumb_width: 320,      
                 thumb_height: 180,
                 input_message_content: {
