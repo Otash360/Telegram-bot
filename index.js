@@ -52,7 +52,7 @@ async function loadAdminsFromDB() {
 }
 
 async function setupFirstAdmin(msg) {
-    if (ADMIN_IDS.length > 0) return false;
+    // if (ADMIN_IDS.length > 0) return false;
     const fromId = msg.from.id;
     ADMIN_IDS.push(fromId);
     try {
